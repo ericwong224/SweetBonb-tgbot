@@ -6,8 +6,7 @@ import {
   getPostResponseMap,
   savePostResponse,
 } from '../db/post-fields.js';
-import { matchChoiceFieldOption, DEFAULT_FIELD_OPTIONS } from '../bot/field-choices.js';
-import { getFieldOptions } from '../bot/choice-flow.js';
+import { matchChoiceFieldOption, getFieldOptions } from '../bot/field-choices.js';
 import {
   getProfile,
   isProfileComplete,
@@ -172,18 +171,15 @@ async function savePostData(ctx: ToolContext, args: Record<string, unknown>) {
 
   const defs = await getPostFieldDefs(ctx.config);
   const def = defs.find((d) => d.field_key === item);
-  const isChoice =
-    def?.field_type === 'choice' ||
-    (!def?.field_type && item in DEFAULT_FIELD_OPTIONS);
-  if (isChoice && def) {
-    const options = getFieldOptions(def);
+  const options = def ? getFieldOptions(def) : [];
+  if (options.length) {
     const matched = matchChoiceFieldOption(item, options, content);
     if (!matched) {
       const hint =
         item === 'target_age'
           ? '格式如 18-20（範圍）或 20+（即 20 歲或以上）'
           : `必須從以下選項選擇：${options.join('、')}`;
-      return gateError(`「${def.label_zh}」${hint}`);
+      return gateError(`「${def?.label_zh ?? item}」${hint}`);
     }
     content = matched;
   }

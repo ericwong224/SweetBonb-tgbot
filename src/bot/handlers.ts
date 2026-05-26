@@ -39,6 +39,7 @@ import {
   parseMatchStart,
   parseMatchTargetStart,
   splitTelegramMessage,
+  stripMarkdown,
 } from '../utils/text.js';
 import type { BotInfo } from '../db/bots.js';
 import {
@@ -589,7 +590,6 @@ async function handleChat(
 
   if (!options?.skipPostChoiceCheck) {
     const choiceState = await ensurePostChoiceOrPrompt(ctx, app.config, userText);
-    if (choiceState === 'prompted') return;
     if (choiceState === 'just_set') {
       userText = WELCOME_AFTER_LANGUAGE;
     }
@@ -741,7 +741,8 @@ async function handleChat(
   });
 
   let lastMessageId: number | undefined;
-  for (const chunk of splitTelegramMessage(reply)) {
+  const plainReply = stripMarkdown(reply);
+  for (const chunk of splitTelegramMessage(plainReply)) {
     const sent = await ctx.reply(chunk);
     lastMessageId = sent.message_id;
   }
@@ -752,14 +753,14 @@ async function handleChat(
     gender: user?.gender ?? null,
     botHandle: app.botInfo.bot_username,
     msgType: 'send-ai-reply',
-    msgContent: reply,
+    msgContent: plainReply,
     chatId: ctx.chat?.id,
     messageId: lastMessageId,
     stageKey: stage,
     agentKey: agentFunction,
   });
 
-  if (agentFunction === 'sb-main' && !options?.skipAcceptanceCheck) {
+  if (agentFunction === 'sb-main') {
     await sendFollowUpPickers(ctx, app.config, from.id);
   }
 }

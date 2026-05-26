@@ -15,8 +15,14 @@ export function splitTelegramMessage(text: string, maxLength = 4000): string[] {
   return chunks;
 }
 
-export function escapeMarkdown(text: string): string {
-  return text.replace(/([_*[\]()~`>#+\-=|{}.!\\])/g, '\\$1');
+export function stripMarkdown(text: string): string {
+  return text
+    .replace(/\*\*(.+?)\*\*/gs, '$1')
+    .replace(/\*(.+?)\*/gs, '$1')
+    .replace(/__(.+?)__/gs, '$1')
+    .replace(/_(.+?)_/gs, '$1')
+    .replace(/`(.+?)`/gs, '$1')
+    .replace(/^#{1,6}\s+/gm, '');
 }
 
 export function parseMatchStart(text: string): number | null {

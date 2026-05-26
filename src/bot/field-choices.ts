@@ -102,3 +102,20 @@ export function parseOptionsJson(raw: unknown): string[] {
   }
   return [];
 }
+
+export function getFieldOptions(field: {
+  field_key: string;
+  options_json?: unknown;
+}): string[] {
+  const fromDb = parseOptionsJson(field.options_json);
+  if (fromDb.length) return fromDb;
+  return DEFAULT_FIELD_OPTIONS[field.field_key] ?? [];
+}
+
+/** A field is a choice when options_json (or fallback) has options. */
+export function fieldHasChoiceOptions(field: {
+  field_key: string;
+  options_json?: unknown;
+}): boolean {
+  return getFieldOptions(field).length > 0;
+}

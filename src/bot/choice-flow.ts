@@ -11,21 +11,17 @@ import { getProfile, updateProfileField } from '../db/profile.js';
 import { resolveUserStage } from '../flow/stages.js';
 import { logInfo } from '../ops/runtime-log.js';
 import {
-  DEFAULT_FIELD_OPTIONS,
   GENDER_OPTIONS,
   genderLabel,
+  getFieldOptions,
+  fieldHasChoiceOptions,
   matchChoiceFieldOption,
   parseGenderInput,
-  parseOptionsJson,
 } from './field-choices.js';
 import { deleteMessageSafe } from './language-flow.js';
 import { WELCOME_AFTER_LANGUAGE } from './commands.js';
 
-export function getFieldOptions(field: Pick<PostFieldDef, 'field_key' | 'options_json'>): string[] {
-  const fromDb = parseOptionsJson(field.options_json);
-  if (fromDb.length) return fromDb;
-  return DEFAULT_FIELD_OPTIONS[field.field_key] ?? [];
-}
+export { getFieldOptions, fieldHasChoiceOptions } from './field-choices.js';
 
 const choiceOptionsByUser = new Map<string, string[]>();
 
@@ -121,12 +117,10 @@ export async function getNextMissingChoiceField(
   const { missing } = await checkPostResponsesComplete(config, userId);
 
   for (const field of defs) {
-    const isChoice =
-      field.field_type === 'choice' ||
-      (!field.field_type && field.field_key in DEFAULT_FIELD_OPTIONS);
-    if (!isChoice || !missing.includes(field.field_key)) continue;
+    if (!missing.includes(field.field_key)) continue;
+    if (!fieldHasChoiceOptions(field)) continue;
     const options = getFieldOptions(field);
-    if (options.length) return { field, options };
+    return { field, options };
   }
   return null;
 }
@@ -146,25 +140,7 @@ export async function tryApplyGenderFromText(
   return true;
 }
 
-export async function tryApplyChoiceFromText(
-  ctx: Context,
-  config: AppConfig,
-  userId: number,
-  field: PostFieldDef,
-  options: string[],
-  text: string,
-): Promise<boolean> {
-  const matched = matchChoiceFieldOption(field.field_key, options, text);
-  if (!matched) return false;
-
-  await savePostResponse(config, userId, field.field_key, matched);
-  await resolveUserStage(config, userId);
-  logInfo('post', 'Choice field set from text', { userId, field: field.field_key, value: matched });
-  await ctx.reply(`已記錄：${field.label_zh} → ${matched}`);
-  return true;
-}
-
-export async function applyGenderChoice(
+export async function tryApplyGenderFromText(
   ctx: Context,
   config: AppConfig,
   userId: number,
@@ -240,48 +216,47 @@ export async function ensureGenderOrPrompt(
   return 'prompted';
 }
 
+export async function tryApplyAnyMissingChoiceFromText(
+  ctx: Context,
+  config: AppConfig,
+  userId: number,
+  text: string,
+): Promise<boolean> {
+  const skipPrompt =
+    text === '你好，我剛開始使用 SweetBonb。' || text === WELCOME_AFTER_LANGUAGE;
+  if (skipPrompt || !text.trim()) return false;
+
+  const defs = await getPostFieldDefs(config);
+  const { missing } = await checkPostResponsesComplete(config, userId);
+
+  for (const field of defs) {
+    if (!missing.includes(field.field_key) || !fieldHasChoiceOptions(field)) continue;
+    const options = getFieldOptions(field);
+    const matched = matchChoiceFieldOption(field.field_key, options, text);
+    if (!matched) continue;
+
+    await savePostResponse(config, userId, field.field_key, matched);
+    await resolveUserStage(config, userId);
+    logInfo('post', 'Choice field set from text', {
+      userId,
+      field: field.field_key,
+      value: matched,
+    });
+    await ctx.reply(`已記錄：${field.label_zh} → ${matched}`);
+    return true;
+  }
+  return false;
+}
+
 export async function ensurePostChoiceOrPrompt(
   ctx: Context,
   config: AppConfig,
   userText: string,
-): Promise<'ready' | 'prompted' | 'just_set'> {
+): Promise<'ready' | 'just_set'> {
   const from = ctx.from;
-  if (!from) return 'prompted';
-
-  const next = await getNextMissingChoiceField(config, from.id);
-  if (!next) return 'ready';
-
-  const profile = await getProfile(config, from.id);
-  const skipPrompt =
-    userText === '你好，我剛開始使用 SweetBonb。' || userText === WELCOME_AFTER_LANGUAGE;
-
-  if (
-    !skipPrompt &&
-    (await tryApplyChoiceFromText(ctx, config, from.id, next.field, next.options, userText))
-  ) {
-    return 'just_set';
-  }
-
-  if (!skipPrompt && userText.trim()) {
-    const lang = profile?.preferred_language ?? null;
-    const en = lang === 'en';
-    if (next.field.field_key === 'target_age') {
-      await ctx.reply(
-        en
-          ? 'Choose a range (e.g. 18-20) or minimum age (e.g. 20+):'
-          : '請選擇年齡範圍（如 18-20）或最低年齡（如 20+，即 20 歲或以上）：',
-      );
-    } else {
-      await ctx.reply(
-        en
-          ? `Please choose an option for "${next.field.label_zh}":`
-          : `請用下面按鈕選擇「${next.field.label_zh}」：`,
-      );
-    }
-  }
-
-  await sendFieldChoicePicker(ctx, from.id, next.field, next.options, profile?.preferred_language ?? null);
-  return 'prompted';
+  if (!from) return 'ready';
+  const applied = await tryApplyAnyMissingChoiceFromText(ctx, config, from.id, userText);
+  return applied ? 'just_set' : 'ready';
 }
 
 export async function sendFollowUpPickers(
@@ -292,12 +267,12 @@ export async function sendFollowUpPickers(
   const profile = await getProfile(config, userId);
   const lang = profile?.preferred_language ?? null;
 
-  const { ensureAcceptanceOrPrompt } = await import('./acceptance-flow.js');
-  const acc = await ensureAcceptanceOrPrompt(ctx, config, '', { forcePrompt: true });
-  if (acc === 'prompted') return;
-
   const next = await getNextMissingChoiceField(config, userId);
-  if (!next) return;
+  if (next) {
+    await sendFieldChoicePicker(ctx, userId, next.field, next.options, lang);
+    return;
+  }
 
-  await sendFieldChoicePicker(ctx, userId, next.field, next.options, lang);
+  const { ensureAcceptanceOrPrompt } = await import('./acceptance-flow.js');
+  await ensureAcceptanceOrPrompt(ctx, config, '', { forcePrompt: true });
 }

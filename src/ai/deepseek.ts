@@ -127,9 +127,8 @@ export async function runAgent(options: RunAgentOptions): Promise<string> {
         });
       }
 
-      if (choice.content?.trim()) {
-        return choice.content.trim();
-      }
+      // Do not return interim assistant text (e.g. "let me check your profile") while
+      // tool results still need a follow-up reply with the next question.
 
       if (toolRounds >= TOOL_ROUND_NUDGE && !nudgedForReply) {
         messages.push({ role: 'user', content: FORCE_REPLY_NUDGE });

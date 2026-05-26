@@ -18,7 +18,13 @@ import {
   ensureAcceptanceOrPrompt,
   hasAcceptanceInProgress,
 } from './acceptance-flow.js';
-import { sendUsernameReminderIfNeeded } from './profile-flow.js';
+import {
+  applyLocationChoice,
+  sendNextCoreProfilePromptIfNeeded,
+  sendUsernameReminderIfNeeded,
+  shouldSendCoreProfileFollowUp,
+  tryApplyCoreProfileFromText,
+} from './profile-flow.js';
 import { getLatestSystemPrompt } from '../db/agents.js';
 import { getMatch, setMatchTargetMessageId, updateMatchStatus } from '../db/matches.js';
 import { getChatHistory, logMessage } from '../db/messages.js';
@@ -155,6 +161,35 @@ export function registerHandlers(bot: Bot, app: AppContext) {
           toolContext(ctx.from?.id),
           WELCOME_AFTER_LANGUAGE,
           { skipLanguageCheck: true },
+        );
+      });
+      return;
+    }
+
+    if (data.startsWith('loc:')) {
+      const index = Number(data.slice(4));
+      if (Number.isNaN(index)) {
+        await ctx.answerCallbackQuery({ text: 'Invalid option' });
+        return;
+      }
+
+      await withUserLock(ctx, app, async () => {
+        const from = ctx.from;
+        if (!from) return;
+        await syncUser(ctx, app.config);
+        const ok = await applyLocationChoice(ctx, app.config, from.id, index);
+        if (!ok) return;
+        await handleChat(
+          ctx,
+          app,
+          toolContext(from.id),
+          WELCOME_AFTER_LANGUAGE,
+          {
+            skipLanguageCheck: true,
+            skipGenderCheck: true,
+            skipPostChoiceCheck: true,
+            skipAcceptanceCheck: true,
+          },
         );
       });
       return;
@@ -604,6 +639,10 @@ async function handleChat(
     }
   }
 
+  if (await tryApplyCoreProfileFromText(ctx, app.config, from.id, userText)) {
+    userText = WELCOME_AFTER_LANGUAGE;
+  }
+
   logInfo('message', 'Incoming user message', {
     userId: from.id,
     username: from.username,
@@ -762,6 +801,9 @@ async function handleChat(
   });
 
   if (agentFunction === 'sb-main') {
+    if (shouldSendCoreProfileFollowUp(stage, profile, plainReply)) {
+      await sendNextCoreProfilePromptIfNeeded(ctx, app.config, from.id);
+    }
     await sendFollowUpPickers(ctx, app.config, from.id);
     await sendUsernameReminderIfNeeded(ctx, app.config, from.id);
   }

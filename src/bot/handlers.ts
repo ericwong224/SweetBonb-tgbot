@@ -26,7 +26,19 @@ import {
   splitTelegramMessage,
 } from '../utils/text.js';
 import type { BotInfo } from '../db/bots.js';
+import {
+  applyLanguageChoice,
+  handleHelpCommand,
+  handleStatusCommand,
+  sendLanguagePicker,
+} from './commands.js';
 import { userMessageLock } from './user-lock.js';
+import {
+  needsLanguageSelection,
+  parseLanguageInput,
+  type UserLanguage,
+} from '../i18n/language.js';
+import { logInfo, logWarn, logError } from '../ops/runtime-log.js';
 
 export interface AppContext {
   config: AppConfig;
@@ -69,8 +81,50 @@ export function registerHandlers(bot: Bot, app: AppContext) {
         return;
       }
 
+      await syncUser(ctx, app.config);
+
+      if (!(await ensureLanguageOrPrompt(ctx, app.config, '', app.botInfo))) {
+        return;
+      }
+
       await handleChat(ctx, app, toolContext(ctx.from?.id), '你好，我剛開始使用 SweetBonb。');
     });
+  });
+
+  bot.command(['help', 'language', 'lang', 'status'], async (ctx) => {
+    await withUserLock(ctx, app, async () => {
+      if (app.config.TEST_MESSAGE_ACK) {
+        await ctx.reply('收到');
+        return;
+      }
+      await syncUser(ctx, app.config);
+      const cmd = (ctx.message?.text ?? '').trim().split(/\s+/)[0]?.replace(/@\w+$/, '').slice(1);
+      logInfo('command', `/${cmd ?? 'unknown'}`, { userId: ctx.from?.id });
+
+      if (cmd === 'help') {
+        await handleHelpCommand(ctx, app.config);
+        return;
+      }
+      if (cmd === 'status') {
+        await handleStatusCommand(ctx, app.config, app.botInfo);
+        return;
+      }
+      await sendLanguagePicker(ctx);
+    });
+  });
+
+  bot.on('callback_query:data', async (ctx) => {
+    const data = ctx.callbackQuery.data;
+    if (!data.startsWith('lang:')) return;
+
+    const lang = data.slice(5) as UserLanguage;
+    if (!['zh-spoken', 'zh-written', 'en'].includes(lang)) {
+      await ctx.answerCallbackQuery({ text: 'Invalid language' });
+      return;
+    }
+
+    await ctx.answerCallbackQuery();
+    await applyLanguageChoice(ctx, app.config, lang, app.botInfo);
   });
 
   bot.on('message:text', async (ctx) => {
@@ -96,6 +150,7 @@ async function withUserLock(
   if (!userMessageLock.tryAcquire(from.id)) {
     const chatId = ctx.chat?.id;
     const messageId = ctx.message?.message_id;
+    logWarn('lock', 'Message ignored — user busy', { userId: from.id, messageId });
     if (chatId != null && messageId != null) {
       await ctx.api.deleteMessage(chatId, messageId).catch(() => undefined);
     }
@@ -335,10 +390,42 @@ async function handleMatchStart(ctx: Context, app: AppContext, matchId: number) 
   });
 }
 
+async function ensureLanguageOrPrompt(
+  ctx: Context,
+  config: AppConfig,
+  userText: string,
+  botInfo: BotInfo,
+): Promise<boolean> {
+  const from = ctx.from;
+  if (!from) return false;
+
+  const profile = await getProfile(config, from.id);
+  if (!needsLanguageSelection(profile)) return true;
+
+  const parsed = parseLanguageInput(userText);
+  if (parsed) {
+    await applyLanguageChoice(ctx, config, parsed, botInfo);
+    return false;
+  }
+
+  await sendLanguagePicker(ctx);
+  return false;
+}
+
 async function handleChat(ctx: Context, app: AppContext, toolCtx: ToolContext, userText: string) {
   await syncUser(ctx, app.config);
   const from = ctx.from;
   if (!from) return;
+
+  if (!(await ensureLanguageOrPrompt(ctx, app.config, userText, app.botInfo))) {
+    return;
+  }
+
+  logInfo('message', 'Incoming user message', {
+    userId: from.id,
+    username: from.username,
+    preview: userText.slice(0, 120),
+  });
 
   const user = await getUser(app.config, from.id);
 
@@ -398,6 +485,7 @@ async function handleChat(ctx: Context, app: AppContext, toolCtx: ToolContext, u
     stage,
     postStatus: userPost?.status ?? 'draft',
     missingPostFields: postCheck.missing,
+    preferredLanguage: profile?.preferred_language ?? null,
   });
 
   const history = await getChatHistory(
@@ -423,9 +511,19 @@ async function handleChat(ctx: Context, app: AppContext, toolCtx: ToolContext, u
       maxIterations: app.config.AGENT_MAX_ITERATIONS,
     });
   } catch (error) {
+    logError('ai', 'Agent failed', {
+      userId: from.id,
+      error: error instanceof Error ? error.message : String(error),
+    });
     console.error('AI agent error:', error);
     reply = '抱歉，AI 暫時未能回應，請稍後再試。';
   }
+
+  logInfo('message', 'AI reply sent', {
+    userId: from.id,
+    stage,
+    preview: reply.slice(0, 120),
+  });
 
   let lastMessageId: number | undefined;
   for (const chunk of splitTelegramMessage(reply)) {

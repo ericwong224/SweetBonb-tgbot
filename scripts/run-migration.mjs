@@ -2,8 +2,11 @@ import fs from 'node:fs';
 import path from 'node:path';
 import mysql from 'mysql2/promise';
 
-const sqlPath = path.join(import.meta.dirname, 'migrations', '001_tg_flow.sql');
-const sql = fs.readFileSync(sqlPath, 'utf8');
+const migrationsDir = path.join(import.meta.dirname, 'migrations');
+const files = fs
+  .readdirSync(migrationsDir)
+  .filter((f) => f.endsWith('.sql'))
+  .sort();
 
 const url = process.env.DATABASE_URL;
 if (!url) {
@@ -25,19 +28,23 @@ function stripLeadingComments(text) {
   return text.replace(/^(\s*--[^\n]*\n)+/, '').trim();
 }
 
-const statements = sql
-  .split(/;\s*\n/)
-  .map((s) => stripLeadingComments(s.trim()))
-  .filter(Boolean);
+for (const file of files) {
+  console.log(`\n=== ${file} ===`);
+  const sql = fs.readFileSync(path.join(migrationsDir, file), 'utf8');
+  const statements = sql
+    .split(/;\s*\n/)
+    .map((s) => stripLeadingComments(s.trim()))
+    .filter(Boolean);
 
-for (const stmt of statements) {
-  try {
-    await c.query(stmt);
-    console.log('OK:', stmt.slice(0, 60).replace(/\s+/g, ' ') + '...');
-  } catch (err) {
-    console.error('FAIL:', stmt.slice(0, 80), err.message);
+  for (const stmt of statements) {
+    try {
+      await c.query(stmt);
+      console.log('OK:', stmt.slice(0, 60).replace(/\s+/g, ' ') + '...');
+    } catch (err) {
+      console.error('FAIL:', stmt.slice(0, 80), err.message);
+    }
   }
 }
 
 await c.end();
-console.log('Migration complete.');
+console.log('\nMigration complete.');

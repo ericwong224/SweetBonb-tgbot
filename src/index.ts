@@ -3,7 +3,10 @@ import { Hono } from 'hono';
 import { loadConfig } from './config.js';
 import { getBotInfo } from './db/bots.js';
 import { createBot, createWebhookHandler, setupWebhook } from './bot/telegram.js';
+import { registerBotCommands } from './bot/commands.js';
 import { startMsgCleanupJob } from './jobs/msg-cleanup.js';
+import { createLogRoutes } from './ops/log-routes.js';
+import { logInfo, logError, runtimeLog } from './ops/runtime-log.js';
 
 function shouldRegisterWebhook(baseUrl: string | undefined): baseUrl is string {
   if (!baseUrl) return false;
@@ -16,9 +19,12 @@ function shouldRegisterWebhook(baseUrl: string | undefined): baseUrl is string {
 
 async function main() {
   const config = loadConfig();
+  runtimeLog.configure(config.OPS_LOG_MAX_ENTRIES);
   const app = new Hono();
   let ready = false;
   let botInfo: Awaited<ReturnType<typeof getBotInfo>> | null = null;
+
+  app.route('/', createLogRoutes(config));
 
   app.get('/health', (c) =>
     c.json({
@@ -40,22 +46,35 @@ async function main() {
 
   const bot = createBot(config, botInfo);
   const webhookHandler = createWebhookHandler(bot, config.TELEGRAM_WEBHOOK_SECRET);
-  app.post('/webhook/telegram', async (c) => webhookHandler(c));
+  app.post('/webhook/telegram', async (c) => {
+    logInfo('webhook', 'Telegram update received');
+    return webhookHandler(c);
+  });
 
   startMsgCleanupJob({ config, api: bot.api, botHandle: botInfo.bot_username });
 
   if (shouldRegisterWebhook(config.WEBHOOK_BASE_URL)) {
     try {
       await setupWebhook(bot, config.WEBHOOK_BASE_URL, config.TELEGRAM_WEBHOOK_SECRET);
+      await registerBotCommands(bot.api);
+      logInfo('boot', 'Telegram commands registered');
     } catch (error) {
+      logError('boot', 'Webhook or command registration failed', {
+        error: error instanceof Error ? error.message : String(error),
+      });
       console.error('Webhook registration failed (bot will still serve /webhook/telegram):', error);
     }
   } else if (!config.WEBHOOK_BASE_URL) {
     console.warn('WEBHOOK_BASE_URL not set; webhook not registered (use for local dev only).');
+    await registerBotCommands(bot.api).catch(() => undefined);
   }
 
   ready = true;
+  logInfo('boot', 'Bot ready', { bot: botInfo.bot_username, mode: config.BOT_MODE });
   console.log(`Bot ready: @${botInfo.bot_username} (${config.BOT_MODE})`);
+  if (config.OPS_LOG_ENABLED) {
+    console.log(`Live log: ${config.WEBHOOK_BASE_URL ?? `http://localhost:${config.PORT}`}/ops/logs?token=<OPS_LOG_TOKEN>`);
+  }
 }
 
 main().catch((error) => {

@@ -2,6 +2,7 @@ import OpenAI from 'openai';
 import type { AppConfig } from '../config.js';
 import { TOOL_DEFINITIONS } from '../tools/definitions.js';
 import { executeTool, type ToolContext } from '../tools/handlers.js';
+import { logInfo } from '../ops/runtime-log.js';
 
 export function createDeepSeekClient(config: AppConfig): OpenAI {
   return new OpenAI({
@@ -84,6 +85,11 @@ export async function runAgent(options: RunAgentOptions): Promise<string> {
           args = {};
         }
         const result = await executeTool(toolContext, toolCall.function.name, args);
+        logInfo('ai-tool', toolCall.function.name, {
+          userId: toolContext.userId,
+          args,
+          resultPreview: JSON.stringify(result).slice(0, 200),
+        });
         messages.push({
           role: 'tool',
           tool_call_id: toolCall.id,

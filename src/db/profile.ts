@@ -8,6 +8,7 @@ export interface UserProfileRow extends RowDataPacket {
   gender: 'M' | 'F' | null;
   dob: Date | null;
   location: string | null;
+  preferred_language: 'zh-spoken' | 'zh-written' | 'en' | null;
   last_online: Date | null;
   acc_active: number;
   completed_at: Date | null;
@@ -71,6 +72,20 @@ export async function upsertProfileFromTelegram(
   );
 }
 
+export async function setPreferredLanguage(
+  config: AppConfig,
+  userId: number,
+  language: 'zh-spoken' | 'zh-written' | 'en',
+): Promise<void> {
+  await execute(
+    config,
+    `INSERT INTO tg_user_profile (user_id, preferred_language, last_online)
+     VALUES (?, ?, NOW())
+     ON DUPLICATE KEY UPDATE preferred_language = VALUES(preferred_language), last_online = NOW()`,
+    [userId, language],
+  );
+}
+
 export async function updateProfileField(
   config: AppConfig,
   userId: number,
@@ -122,6 +137,7 @@ export function profileToMemberInfo(
     gender: profile?.gender ?? null,
     dob: profile?.dob ? profile.dob.toISOString().slice(0, 10) : null,
     location: profile?.location ?? null,
+    preferred_language: profile?.preferred_language ?? null,
     post_on: postStatus,
     post_format_2: bodyFormat,
     missing_basic_fields: getMissingBasicFields(profile),

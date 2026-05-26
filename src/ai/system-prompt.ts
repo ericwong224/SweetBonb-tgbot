@@ -1,6 +1,7 @@
 import type { UserProfileRow } from '../db/profile.js';
 import { getMissingBasicFields } from '../db/profile.js';
 import type { UserStage } from '../flow/stages.js';
+import { buildLanguagePromptBlock, getLanguageLabel, type UserLanguage } from '../i18n/language.js';
 
 function formatDateTime(date: Date): string {
   const pad = (n: number) => String(n).padStart(2, '0');
@@ -32,6 +33,7 @@ export function buildUserContextBlock(options: {
     `性別:${profile.gender ?? ''}`,
     `出生日期:${formatDate(profile.dob)}`,
     `居住地:${profile.location ?? ''}`,
+    `回覆語言:${getLanguageLabel(profile.preferred_language)}`,
     `最後活動時間:${profile.last_online ? formatDateTime(new Date(profile.last_online)) : ''}`,
     `啟示狀況:${postStatus ?? 'draft'}`,
     `##當前流程階段\n${stage}`,
@@ -54,6 +56,7 @@ export function buildChatSystemPrompt(options: {
   stage?: UserStage;
   postStatus?: string;
   missingPostFields?: string[];
+  preferredLanguage?: UserLanguage | null;
   now?: Date;
 }): string {
   const {
@@ -63,6 +66,7 @@ export function buildChatSystemPrompt(options: {
     stage = 'profile_incomplete',
     postStatus,
     missingPostFields,
+    preferredLanguage,
     now = new Date(),
   } = options;
 
@@ -70,6 +74,11 @@ export function buildChatSystemPrompt(options: {
 
   if (basePrompt.trim()) {
     parts.push(basePrompt.trim());
+  }
+
+  const lang = preferredLanguage ?? profile?.preferred_language ?? null;
+  if (agentFunction === 'sb-main' && lang) {
+    parts.push(buildLanguagePromptBlock(lang));
   }
 
   if (agentFunction === 'sb-main') {

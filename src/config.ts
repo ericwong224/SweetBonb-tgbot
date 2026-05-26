@@ -24,6 +24,9 @@ const envSchema = z.object({
   MSG_CLEANUP_INTERVAL_MS: z.coerce.number().default(60_000),
   MSG_CLEANUP_INACTIVE_HOURS: z.coerce.number().default(24),
   MSG_CLEANUP_MAX_AGE_HOURS: z.coerce.number().default(36),
+  OPS_LOG_ENABLED: z.coerce.boolean().default(true),
+  OPS_LOG_TOKEN: z.string().min(8).optional(),
+  OPS_LOG_MAX_ENTRIES: z.coerce.number().default(500),
 });
 
 export type AppConfig = z.infer<typeof envSchema>;

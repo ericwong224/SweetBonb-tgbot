@@ -1,0 +1,29 @@
+{
+  "name": "sweetbonb-tg",
+  "version": "1.0.0",
+  "description": "SweetBonb Telegram AI Bot (N8N replacement)",
+  "type": "module",
+  "engines": {
+    "node": ">=20"
+  },
+  "scripts": {
+    "dev": "tsx watch src/index.ts",
+    "build": "tsc",
+    "start": "node dist/index.js",
+    "typecheck": "tsc --noEmit",
+    "probe-db": "node scripts/probe-db.mjs"
+  },
+  "dependencies": {
+    "@hono/node-server": "^1.14.1",
+    "grammy": "^1.35.0",
+    "hono": "^4.7.7",
+    "mysql2": "^3.14.0",
+    "openai": "^4.96.0",
+    "zod": "^3.24.2"
+  },
+  "devDependencies": {
+    "@types/node": "^22.14.0",
+    "tsx": "^4.19.3",
+    "typescript": "^5.8.3"
+  }
+}

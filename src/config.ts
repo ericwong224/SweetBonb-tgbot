@@ -1,0 +1,26 @@
+import { z } from 'zod';
+
+const envSchema = z.object({
+  PORT: z.coerce.number().default(8080),
+  NODE_ENV: z.enum(['development', 'production', 'test']).default('production'),
+  DATABASE_URL: z.string().min(1),
+  DEEPSEEK_API_KEY: z.string().min(1),
+  DEEPSEEK_MODEL: z.string().default('deepseek-chat'),
+  BOT_MODE: z.enum(['live', 'test', 'admin']).default('live'),
+  TELEGRAM_BOT_TOKEN: z.string().optional(),
+  TELEGRAM_BOT_USERNAME: z.string().optional(),
+  WEBHOOK_BASE_URL: z.string().url().optional(),
+  TELEGRAM_WEBHOOK_SECRET: z.string().min(8).default('sweetbonb-webhook-secret'),
+  CHAT_HISTORY_LIMIT: z.coerce.number().default(20),
+});
+
+export type AppConfig = z.infer<typeof envSchema>;
+
+export function loadConfig(): AppConfig {
+  const parsed = envSchema.safeParse(process.env);
+  if (!parsed.success) {
+    console.error('Invalid environment configuration:', parsed.error.flatten().fieldErrors);
+    throw new Error('Invalid environment configuration');
+  }
+  return parsed.data;
+}

@@ -1,0 +1,54 @@
+name: sweetbonb-tg-bot
+region: sgp
+
+services:
+  - name: bot
+    github:
+      repo: ericwong224/sweetbonb-tg
+      branch: main
+      deploy_on_push: true
+    dockerfile_path: Dockerfile
+    instance_size_slug: apps-s-1vcpu-0.5gb
+    instance_count: 1
+    http_port: 8080
+    health_check:
+      http_path: /health
+      initial_delay_seconds: 20
+      period_seconds: 10
+      timeout_seconds: 5
+      success_threshold: 1
+      failure_threshold: 5
+    envs:
+      - key: PORT
+        value: "8080"
+        scope: RUN_TIME
+      - key: BOT_MODE
+        value: live
+        scope: RUN_TIME
+      - key: DEEPSEEK_MODEL
+        value: deepseek-chat
+        scope: RUN_TIME
+      - key: DATABASE_URL
+        value: ${sweetbonb-tgbot-db.DATABASE_URL}
+        scope: RUN_TIME
+      - key: DEEPSEEK_API_KEY
+        scope: RUN_TIME
+        type: SECRET
+      - key: TELEGRAM_WEBHOOK_SECRET
+        scope: RUN_TIME
+        type: SECRET
+      - key: WEBHOOK_BASE_URL
+        scope: RUN_TIME
+        type: SECRET
+
+databases:
+  - name: sweetbonb-tgbot-db
+    engine: MYSQL
+    production: true
+    cluster_name: db-wwferic
+    db_name: sweetbonb-tgbot
+    db_user: sweetbonb-tgbot
+
+alerts:
+  - rule: DEPLOYMENT_FAILED
+  - rule: DOMAIN_FAILED

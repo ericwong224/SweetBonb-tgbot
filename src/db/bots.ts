@@ -4,7 +4,7 @@ import { query } from './client.js';
 
 export interface BotInfo extends RowDataPacket {
   bot_id: number;
-  bot_mode: 'live' | 'test' | 'admin';
+  bot_mode: 'live' | 'test' | 'demo' | 'admin';
   bot_username: string;
   bot_token: string;
   bot_admin_id: number;

@@ -6,7 +6,7 @@ const envSchema = z.object({
   DATABASE_URL: z.string().min(1),
   DEEPSEEK_API_KEY: z.string().min(1),
   DEEPSEEK_MODEL: z.string().default('deepseek-chat'),
-  BOT_MODE: z.enum(['live', 'test', 'admin']).default('live'),
+  BOT_MODE: z.enum(['live', 'test', 'demo', 'admin']).default('live'),
   TELEGRAM_BOT_TOKEN: z.string().optional(),
   TELEGRAM_BOT_USERNAME: z.string().optional(),
   WEBHOOK_BASE_URL: z.string().url().optional(),

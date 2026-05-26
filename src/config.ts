@@ -18,6 +18,8 @@ const envSchema = z.object({
     .default('sweetbonb-webhook-secret'),
   CHAT_HISTORY_LIMIT: z.coerce.number().default(20),
   AGENT_MAX_ITERATIONS: z.coerce.number().default(30),
+  /** Reply "收到" only — for webhook smoke test */
+  TEST_MESSAGE_ACK: z.coerce.boolean().default(false),
 });
 
 export type AppConfig = z.infer<typeof envSchema>;

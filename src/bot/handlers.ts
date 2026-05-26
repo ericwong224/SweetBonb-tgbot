@@ -25,7 +25,16 @@ export function registerHandlers(bot: Bot, app: AppContext) {
     userId,
   });
 
+  if (app.config.TEST_MESSAGE_ACK) {
+    console.warn('TEST_MESSAGE_ACK enabled: replying 收到 to all text messages');
+  }
+
   bot.command('start', async (ctx) => {
+    if (app.config.TEST_MESSAGE_ACK) {
+      await ctx.reply('收到');
+      return;
+    }
+
     const text = ctx.message?.text ?? '/start';
     const matchId = parseMatchStart(text);
 
@@ -38,6 +47,10 @@ export function registerHandlers(bot: Bot, app: AppContext) {
   });
 
   bot.on('message:text', async (ctx) => {
+    if (app.config.TEST_MESSAGE_ACK) {
+      await ctx.reply('收到');
+      return;
+    }
     if (ctx.message.text.startsWith('/')) return;
     await handleChat(ctx, app, toolContext(ctx.from?.id), ctx.message.text);
   });

@@ -43,7 +43,7 @@ services:
         value: https://sweetbonb-tg-bot-ege7y.ondigitalocean.app
         scope: RUN_TIME
       - key: TEST_MESSAGE_ACK
-        value: "true"
+        value: "false"
         scope: RUN_TIME
 
 alerts:

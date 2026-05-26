@@ -17,6 +17,7 @@ export interface RunAgentOptions {
   userMessage: string;
   history?: Array<{ role: 'user' | 'assistant'; content: string }>;
   toolsEnabled?: boolean;
+  allowedToolNames?: string[];
   maxIterations?: number;
 }
 
@@ -28,10 +29,20 @@ export async function runAgent(options: RunAgentOptions): Promise<string> {
     userMessage,
     history = [],
     toolsEnabled = true,
+    allowedToolNames,
     maxIterations = 30,
   } = options;
 
   const client = createDeepSeekClient(config);
+  const toolDefs =
+    toolsEnabled && allowedToolNames?.length
+      ? TOOL_DEFINITIONS.filter((t) =>
+          allowedToolNames.includes(t.function.name),
+        )
+      : toolsEnabled
+        ? TOOL_DEFINITIONS
+        : undefined;
+
   const messages: OpenAI.Chat.Completions.ChatCompletionMessageParam[] = [
     { role: 'system', content: systemPrompt },
     ...history.map((item) => ({ role: item.role, content: item.content })),
@@ -44,7 +55,7 @@ export async function runAgent(options: RunAgentOptions): Promise<string> {
       completion = await client.chat.completions.create({
         model: config.DEEPSEEK_MODEL,
         messages,
-        tools: toolsEnabled ? TOOL_DEFINITIONS : undefined,
+        tools: toolDefs,
         tool_choice: toolsEnabled ? 'auto' : undefined,
         temperature: 0.7,
       });

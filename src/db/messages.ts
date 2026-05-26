@@ -1,6 +1,9 @@
 import type { AppConfig } from '../config.js';
-import { execute, query } from './client.js';
-import type { RowDataPacket } from 'mysql2/promise';
+import {
+  appendChatMessage,
+  getChatHistory as getChatHistoryFromTg,
+  type ChatMsgStatus,
+} from './chat-log.js';
 
 export type MsgType =
   | 'send-sys-msg'
@@ -20,41 +23,33 @@ export async function logMessage(
     botHandle: string;
     msgType: MsgType;
     msgContent: string;
-    msgStatus?: 'done' | 'waiting';
+    msgStatus?: ChatMsgStatus;
     chatId?: number;
     messageId?: number;
+    stageKey?: string | null;
+    agentKey?: string | null;
     sysmsg?: string;
   },
 ): Promise<void> {
-  await execute(
-    config,
-    `INSERT INTO msg_record (user_id, username, gender, bot_handle, msg_type, msg_content, msg_status)
-     VALUES (?, ?, ?, ?, ?, ?, ?)`,
-    [
-      data.userId,
-      data.username ?? null,
-      data.gender ?? null,
-      data.botHandle,
-      data.msgType,
-      data.msgContent,
-      data.msgStatus ?? 'done',
-    ],
-  );
+  const role =
+    data.msgType === 'incoming-msg'
+      ? ('user' as const)
+      : data.msgType === 'send-ai-reply'
+        ? ('assistant' as const)
+        : ('system' as const);
 
-  await execute(
-    config,
-    `INSERT INTO n8n_msg_record (msg_type, bot_handle, chat_id, message_id, msg_content, msg_status, sysmsg)
-     VALUES (?, ?, ?, ?, ?, ?, ?)`,
-    [
-      data.msgType,
-      data.botHandle,
-      data.chatId ?? data.userId,
-      data.messageId ?? null,
-      data.msgContent,
-      data.msgStatus ?? 'done',
-      data.sysmsg ?? null,
-    ],
-  );
+  await appendChatMessage(config, {
+    userId: data.userId,
+    botHandle: data.botHandle,
+    role,
+    content: data.msgContent,
+    msgType: data.msgType,
+    msgStatus: data.msgStatus ?? 'done',
+    chatId: data.chatId,
+    messageId: data.messageId,
+    stageKey: data.stageKey,
+    agentKey: data.agentKey,
+  });
 }
 
 export async function getChatHistory(
@@ -63,21 +58,5 @@ export async function getChatHistory(
   botHandle: string,
   limit: number,
 ): Promise<Array<{ role: 'user' | 'assistant'; content: string }>> {
-  const rows = await query<RowDataPacket[]>(
-    config,
-    `SELECT msg_type, msg_content
-     FROM msg_record
-     WHERE user_id = ? AND bot_handle = ? AND msg_type IN ('incoming-msg', 'send-ai-reply')
-     ORDER BY msg_date DESC
-     LIMIT ?`,
-    [userId, botHandle, limit],
-  );
-
-  return rows
-    .reverse()
-    .map((row) => ({
-      role: row.msg_type === 'incoming-msg' ? ('user' as const) : ('assistant' as const),
-      content: row.msg_content as string,
-    }))
-    .filter((m) => m.content?.trim());
+  return getChatHistoryFromTg(config, userId, botHandle, limit);
 }

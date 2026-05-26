@@ -20,6 +20,10 @@ const envSchema = z.object({
   AGENT_MAX_ITERATIONS: z.coerce.number().default(30),
   /** Reply "收到" only — for webhook smoke test */
   TEST_MESSAGE_ACK: z.coerce.boolean().default(false),
+  MSG_CLEANUP_ENABLED: z.coerce.boolean().default(true),
+  MSG_CLEANUP_INTERVAL_MS: z.coerce.number().default(60_000),
+  MSG_CLEANUP_INACTIVE_HOURS: z.coerce.number().default(24),
+  MSG_CLEANUP_MAX_AGE_HOURS: z.coerce.number().default(36),
 });
 
 export type AppConfig = z.infer<typeof envSchema>;

@@ -3,6 +3,7 @@ import { Hono } from 'hono';
 import { loadConfig } from './config.js';
 import { getBotInfo } from './db/bots.js';
 import { createBot, createWebhookHandler, setupWebhook } from './bot/telegram.js';
+import { startMsgCleanupJob } from './jobs/msg-cleanup.js';
 
 function shouldRegisterWebhook(baseUrl: string | undefined): baseUrl is string {
   if (!baseUrl) return false;
@@ -40,6 +41,8 @@ async function main() {
   const bot = createBot(config, botInfo);
   const webhookHandler = createWebhookHandler(bot, config.TELEGRAM_WEBHOOK_SECRET);
   app.post('/webhook/telegram', async (c) => webhookHandler(c));
+
+  startMsgCleanupJob({ config, api: bot.api, botHandle: botInfo.bot_username });
 
   if (shouldRegisterWebhook(config.WEBHOOK_BASE_URL)) {
     try {

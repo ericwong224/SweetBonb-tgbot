@@ -6,10 +6,27 @@ import { runAgent, runMatchAnalysis } from '../ai/deepseek.js';
 import { getLatestSystemPrompt } from '../db/agents.js';
 import { getMatch, setMatchTargetMessageId, updateMatchStatus } from '../db/matches.js';
 import { getChatHistory, logMessage } from '../db/messages.js';
+import { checkPostResponsesComplete } from '../db/post-fields.js';
+import { getProfile, isProfileComplete, upsertProfileFromTelegram } from '../db/profile.js';
+import {
+  createTgMatch,
+  findExistingTgMatch,
+  getTgMatch,
+  setTgMatchTargetMessageId,
+  updateTgMatchStatus,
+} from '../db/tg-match.js';
+import { getUserPost, isPostPublished } from '../db/user-post.js';
+import { getUser, isUserBlocked } from '../db/users.js';
+import { resolveUserStage, toolsForStage } from '../flow/stages.js';
 import type { ToolContext } from '../tools/handlers.js';
-import { getUser, isUserBlocked, upsertTelegramUser } from '../db/users.js';
-import { splitTelegramMessage, normalizeMatchResult, parseMatchStart } from '../utils/text.js';
+import {
+  normalizeMatchResult,
+  parseMatchStart,
+  parseMatchTargetStart,
+  splitTelegramMessage,
+} from '../utils/text.js';
 import type { BotInfo } from '../db/bots.js';
+import { userMessageLock } from './user-lock.js';
 
 export interface AppContext {
   config: AppConfig;
@@ -17,12 +34,15 @@ export interface AppContext {
 }
 
 const BLOCKED_USER_MESSAGE = '不好意思!\n您的活動已被封鎖，請聯絡 @sexycandyhk';
+const WAIT_MESSAGE = '請稍後';
 
 export function registerHandlers(bot: Bot, app: AppContext) {
-  const toolContext = (userId?: number): ToolContext => ({
+  const toolContext = (userId?: number, stage?: Awaited<ReturnType<typeof resolveUserStage>>): ToolContext => ({
     config: app.config,
     api: bot.api,
     userId,
+    botUsername: app.botInfo.bot_username,
+    userStage: stage,
   });
 
   if (app.config.TEST_MESSAGE_ACK) {
@@ -30,41 +50,176 @@ export function registerHandlers(bot: Bot, app: AppContext) {
   }
 
   bot.command('start', async (ctx) => {
-    if (app.config.TEST_MESSAGE_ACK) {
-      await ctx.reply('收到');
-      return;
-    }
+    await withUserLock(ctx, app, async () => {
+      if (app.config.TEST_MESSAGE_ACK) {
+        await ctx.reply('收到');
+        return;
+      }
 
-    const text = ctx.message?.text ?? '/start';
-    const matchId = parseMatchStart(text);
+      const text = ctx.message?.text ?? '/start';
+      const targetUserId = parseMatchTargetStart(text);
+      if (targetUserId) {
+        await handleMatchFromChannel(ctx, app, targetUserId);
+        return;
+      }
 
-    if (matchId) {
-      await handleMatchStart(ctx, app, matchId);
-      return;
-    }
+      const matchId = parseMatchStart(text);
+      if (matchId) {
+        await handleMatchStart(ctx, app, matchId);
+        return;
+      }
 
-    await handleChat(ctx, app, toolContext(ctx.from?.id), '你好，我剛開始使用 SweetBonb。');
+      await handleChat(ctx, app, toolContext(ctx.from?.id), '你好，我剛開始使用 SweetBonb。');
+    });
   });
 
   bot.on('message:text', async (ctx) => {
-    if (app.config.TEST_MESSAGE_ACK) {
-      await ctx.reply('收到');
-      return;
-    }
-    if (ctx.message.text.startsWith('/')) return;
-    await handleChat(ctx, app, toolContext(ctx.from?.id), ctx.message.text);
+    await withUserLock(ctx, app, async () => {
+      if (app.config.TEST_MESSAGE_ACK) {
+        await ctx.reply('收到');
+        return;
+      }
+      if (ctx.message.text.startsWith('/')) return;
+      await handleChat(ctx, app, toolContext(ctx.from?.id), ctx.message.text);
+    });
   });
+}
+
+async function withUserLock(
+  ctx: Context,
+  app: AppContext,
+  handler: () => Promise<void>,
+): Promise<void> {
+  const from = ctx.from;
+  if (!from) return;
+
+  if (!userMessageLock.tryAcquire(from.id)) {
+    const chatId = ctx.chat?.id;
+    const messageId = ctx.message?.message_id;
+    if (chatId != null && messageId != null) {
+      await ctx.api.deleteMessage(chatId, messageId).catch(() => undefined);
+    }
+    if (userMessageLock.shouldNotifyWait(from.id)) {
+      await ctx.reply(WAIT_MESSAGE).catch(() => undefined);
+      userMessageLock.markWaitNotified(from.id);
+    }
+    return;
+  }
+
+  try {
+    await handler();
+  } finally {
+    userMessageLock.release(from.id);
+  }
 }
 
 async function syncUser(ctx: Context, config: AppConfig) {
   const from = ctx.from;
   if (!from) return;
 
-  await upsertTelegramUser(config, {
+  await upsertProfileFromTelegram(config, {
     userId: from.id,
     username: from.username,
     firstName: from.first_name,
     lastName: from.last_name,
+  });
+}
+
+async function handleMatchFromChannel(
+  ctx: Context,
+  app: AppContext,
+  targetUserId: number,
+) {
+  await syncUser(ctx, app.config);
+  const from = ctx.from;
+  if (!from) return;
+
+  if (from.id === targetUserId) {
+    await ctx.reply('這是你自己的啟示，無法與自己配對。');
+    return;
+  }
+
+  const initiatorProfile = await getProfile(app.config, from.id);
+  const targetProfile = await getProfile(app.config, targetUserId);
+
+  if (!isProfileComplete(initiatorProfile)) {
+    await ctx.reply('請先完成基本資料，才能發起配對。');
+    return;
+  }
+
+  const initiatorPost = await getUserPost(app.config, from.id);
+  if (!isPostPublished(initiatorPost)) {
+    await ctx.reply('請先發佈你的啟示，才能向他人發起配對。');
+    return;
+  }
+
+  if (!isProfileComplete(targetProfile)) {
+    await ctx.reply('對方資料不完整，暫時無法配對。');
+    return;
+  }
+
+  const targetPost = await getUserPost(app.config, targetUserId);
+  if (!isPostPublished(targetPost)) {
+    await ctx.reply('對方的啟示尚未發佈，暫時無法配對。');
+    return;
+  }
+
+  const existing = await findExistingTgMatch(app.config, from.id, targetUserId);
+  if (existing) {
+    await ctx.reply('你已經向這位用戶發起過配對請求，請等待回覆。');
+    return;
+  }
+
+  const initiatorSnapshot = initiatorPost?.body_format ?? '';
+  const targetSnapshot = targetPost?.body_format ?? '';
+  const matchId = await createTgMatch(
+    app.config,
+    from.id,
+    targetUserId,
+    initiatorSnapshot,
+    targetSnapshot,
+  );
+
+  const systemPrompt = await getLatestSystemPrompt(app.config, 'sb-match');
+  const analysis = await runMatchAnalysis(
+    app.config,
+    systemPrompt,
+    initiatorSnapshot,
+    targetSnapshot,
+  );
+
+  const result = normalizeMatchResult(analysis);
+  const matchRate = result === 'match' ? 85 : 40;
+
+  if (result === 'match') {
+    await updateTgMatchStatus(
+      app.config,
+      matchId,
+      'Waiting-for-reply',
+      analysis,
+      matchRate,
+    );
+    await ctx.reply('配對分析：匹配。系統已通知對方，請等待回覆。');
+  } else {
+    await updateTgMatchStatus(
+      app.config,
+      matchId,
+      'Inappropriate',
+      analysis,
+      matchRate,
+    );
+    await ctx.reply('配對分析：不匹配。');
+  }
+
+  await logMessage(app.config, {
+    userId: from.id,
+    username: from.username,
+    botHandle: app.botInfo.bot_username,
+    msgType: 'match-request',
+    msgContent: analysis,
+    chatId: ctx.chat?.id,
+    messageId: ctx.message?.message_id,
+    agentKey: 'sb-match',
   });
 }
 
@@ -73,8 +228,65 @@ async function handleMatchStart(ctx: Context, app: AppContext, matchId: number) 
   const from = ctx.from;
   if (!from) return;
 
-  const match = await getMatch(app.config, matchId);
+  const tgMatch = await getTgMatch(app.config, matchId);
+  if (tgMatch) {
+    if (tgMatch.target_id !== from.id && tgMatch.initiator_id !== from.id) {
+      await ctx.reply('這個配對請求不屬於你。');
+      return;
+    }
 
+    const systemPrompt = await getLatestSystemPrompt(app.config, 'sb-match');
+    const analysis = await runMatchAnalysis(
+      app.config,
+      systemPrompt,
+      tgMatch.initiator_snapshot ?? '',
+      tgMatch.target_snapshot ?? '',
+    );
+
+    const result = normalizeMatchResult(analysis);
+    const matchRate = result === 'match' ? 85 : 40;
+
+    if (result === 'match') {
+      await updateTgMatchStatus(
+        app.config,
+        matchId,
+        'Waiting-for-reply',
+        analysis,
+        matchRate,
+      );
+
+      if (tgMatch.target_id === from.id) {
+        const reply = `你收到一個配對請求：\n\n${tgMatch.initiator_snapshot ?? ''}\n\n是否接受這個配對？回覆「接受」或「拒絕」。`;
+        const sent = await ctx.reply(reply);
+        await setTgMatchTargetMessageId(app.config, matchId, sent.message_id);
+      } else {
+        await ctx.reply('配對分析：匹配。系統已向对方發出請求，請等待回覆。');
+      }
+    } else {
+      await updateTgMatchStatus(
+        app.config,
+        matchId,
+        'Inappropriate',
+        analysis,
+        matchRate,
+      );
+      await ctx.reply('配對分析：不匹配。');
+    }
+
+    await logMessage(app.config, {
+      userId: from.id,
+      username: from.username,
+      botHandle: app.botInfo.bot_username,
+      msgType: 'match-request',
+      msgContent: analysis,
+      chatId: ctx.chat?.id,
+      messageId: ctx.message?.message_id,
+      agentKey: 'sb-match',
+    });
+    return;
+  }
+
+  const match = await getMatch(app.config, matchId);
   if (!match) {
     await ctx.reply('找不到這個配對請求。');
     return;
@@ -119,6 +331,7 @@ async function handleMatchStart(ctx: Context, app: AppContext, matchId: number) 
     msgContent: analysis,
     chatId: ctx.chat?.id,
     messageId: ctx.message?.message_id,
+    agentKey: 'sb-match',
   });
 }
 
@@ -152,6 +365,11 @@ async function handleChat(ctx: Context, app: AppContext, toolCtx: ToolContext, u
   const agentFunction = isAdmin && userText.startsWith('/admin') ? 'sb-admin' : 'sb-main';
   const cleanText = userText.replace(/^\/admin\s*/, '');
 
+  const stage = await resolveUserStage(app.config, from.id);
+  const profile = await getProfile(app.config, from.id);
+  const userPost = await getUserPost(app.config, from.id);
+  const postCheck = await checkPostResponsesComplete(app.config, from.id);
+
   await logMessage(app.config, {
     userId: from.id,
     username: from.username,
@@ -161,11 +379,13 @@ async function handleChat(ctx: Context, app: AppContext, toolCtx: ToolContext, u
     msgContent: cleanText,
     chatId: ctx.chat?.id,
     messageId: ctx.message?.message_id,
+    stageKey: stage,
+    agentKey: agentFunction,
   });
 
   await ctx.api.sendChatAction(from.id, 'typing');
 
-  const basePrompt = await getLatestSystemPrompt(app.config, agentFunction);
+  const basePrompt = await getLatestSystemPrompt(app.config, agentFunction, stage);
   if (!basePrompt.trim()) {
     await ctx.reply('AI 服務暫時未能載入設定，請稍後再試。');
     return;
@@ -174,7 +394,10 @@ async function handleChat(ctx: Context, app: AppContext, toolCtx: ToolContext, u
   const systemPrompt = buildChatSystemPrompt({
     basePrompt,
     agentFunction,
-    user,
+    profile,
+    stage,
+    postStatus: userPost?.status ?? 'draft',
+    missingPostFields: postCheck.missing,
   });
 
   const history = await getChatHistory(
@@ -184,15 +407,19 @@ async function handleChat(ctx: Context, app: AppContext, toolCtx: ToolContext, u
     app.config.CHAT_HISTORY_LIMIT,
   );
 
+  const allowedToolNames =
+    agentFunction === 'sb-main' ? toolsForStage(stage) : undefined;
+
   let reply: string;
   try {
     reply = await runAgent({
       config: app.config,
-      toolContext: { ...toolCtx, userId: from.id },
+      toolContext: { ...toolCtx, userId: from.id, userStage: stage },
       systemPrompt,
       userMessage: cleanText,
       history,
       toolsEnabled: agentFunction === 'sb-main',
+      allowedToolNames,
       maxIterations: app.config.AGENT_MAX_ITERATIONS,
     });
   } catch (error) {
@@ -200,8 +427,10 @@ async function handleChat(ctx: Context, app: AppContext, toolCtx: ToolContext, u
     reply = '抱歉，AI 暫時未能回應，請稍後再試。';
   }
 
+  let lastMessageId: number | undefined;
   for (const chunk of splitTelegramMessage(reply)) {
-    await ctx.reply(chunk);
+    const sent = await ctx.reply(chunk);
+    lastMessageId = sent.message_id;
   }
 
   await logMessage(app.config, {
@@ -212,6 +441,9 @@ async function handleChat(ctx: Context, app: AppContext, toolCtx: ToolContext, u
     msgType: 'send-ai-reply',
     msgContent: reply,
     chatId: ctx.chat?.id,
+    messageId: lastMessageId,
+    stageKey: stage,
+    agentKey: agentFunction,
   });
 }
 
@@ -219,8 +451,15 @@ async function handleMatchReply(ctx: Context, app: AppContext, action: 'accept' 
   const from = ctx.from;
   if (!from) return;
 
+  const stage = await resolveUserStage(app.config, from.id);
   const { executeTool } = await import('../tools/handlers.js');
-  const toolCtx: ToolContext = { config: app.config, api: ctx.api };
+  const toolCtx: ToolContext = {
+    config: app.config,
+    api: ctx.api,
+    userId: from.id,
+    botUsername: app.botInfo.bot_username,
+    userStage: stage,
+  };
   const pending = await executeTool(toolCtx, 'match_request', { user_id: from.id });
 
   if (!Array.isArray(pending) || pending.length === 0) {
@@ -241,5 +480,7 @@ async function handleMatchReply(ctx: Context, app: AppContext, action: 'accept' 
     msgContent: action,
     chatId: ctx.chat?.id,
     messageId: ctx.message?.message_id,
+    stageKey: stage,
+    agentKey: 'sb-main',
   });
 }

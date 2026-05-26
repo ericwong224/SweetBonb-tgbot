@@ -1,11 +1,16 @@
 import type { RowDataPacket } from 'mysql2/promise';
 import type { AppConfig } from '../config.js';
 import { query } from './client.js';
+import { buildAgentPrompt } from './prompts.js';
 
 export async function getLatestSystemPrompt(
   config: AppConfig,
   agentFunction: string,
+  stageKey?: string | null,
 ): Promise<string> {
+  const fromTg = await buildAgentPrompt(config, agentFunction, stageKey);
+  if (fromTg.trim()) return fromTg;
+
   const rows = await query<RowDataPacket[]>(
     config,
     `SELECT s.sysmsg

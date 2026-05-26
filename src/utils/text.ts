@@ -24,6 +24,11 @@ export function parseMatchStart(text: string): number | null {
   return match ? Number(match[1]) : null;
 }
 
+export function parseMatchTargetStart(text: string): number | null {
+  const match = text.trim().match(/^\/start\s+match-target-(\d+)$/i);
+  return match ? Number(match[1]) : null;
+}
+
 export function normalizeMatchResult(text: string): 'match' | 'no_match' | 'unknown' {
   const trimmed = text.trim();
   if (trimmed.includes('匹配') && !trimmed.includes('不匹配')) return 'match';

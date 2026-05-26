@@ -4,6 +4,7 @@ import { loadConfig } from './config.js';
 import { getBotInfo } from './db/bots.js';
 import { createBot, createWebhookHandler, setupWebhook } from './bot/telegram.js';
 import { registerBotCommands } from './bot/commands.js';
+import { formatAdminErrorAlert, notifyAdminThrottled } from './bot/admin-notify.js';
 import { startMsgCleanupJob } from './jobs/msg-cleanup.js';
 import { createLogRoutes } from './ops/log-routes.js';
 import { logError, logInfo, logWarn, runtimeLog } from './ops/runtime-log.js';
@@ -46,15 +47,27 @@ async function main() {
   }
 
   const deepseekCheck = await verifyDeepSeekApi(config);
+  const bot = createBot(config, botInfo);
+
   if (!deepseekCheck.ok) {
     logWarn('boot', 'DeepSeek API check failed — AI replies will not work until DEEPSEEK_API_KEY is fixed', {
       error: deepseekCheck.error,
     });
+    await notifyAdminThrottled(
+      bot.api,
+      botInfo.bot_admin_id,
+      'boot:deepseek-auth',
+      formatAdminErrorAlert({
+        category: 'boot / DeepSeek API',
+        error: deepseekCheck.error ?? 'unknown',
+        bot: botInfo.bot_username,
+        mode: config.BOT_MODE,
+      }),
+      30 * 60_000,
+    );
   } else {
     logInfo('boot', 'DeepSeek API check passed');
   }
-
-  const bot = createBot(config, botInfo);
   const webhookHandler = createWebhookHandler(bot, config.TELEGRAM_WEBHOOK_SECRET);
   app.post('/webhook/telegram', async (c) => {
     logInfo('webhook', 'Telegram update received');

@@ -20,23 +20,15 @@ export async function verifyDeepSeekApi(config: AppConfig): Promise<{ ok: boolea
   }
 }
 
-export function isDeepSeekAuthError(error: unknown): boolean {
-  const message = error instanceof Error ? error.message : String(error);
-  return message.includes('401') || message.toLowerCase().includes('authentication');
+/** Generic user-facing message — no internal error details. */
+export function userFacingAiError(lang: string | null | undefined): string {
+  if (lang === 'en') {
+    return 'Sorry, temporarily unable to respond. Please try again later.';
+  }
+  return '抱歉，暫時未能回應，請稍後再試。';
 }
 
-export function userFacingAiError(error: unknown, lang: string | null | undefined): string {
-  if (isDeepSeekAuthError(error)) {
-    if (lang === 'en') {
-      return 'AI service is temporarily unavailable (API configuration). Please contact support.';
-    }
-    if (lang === 'zh-written') {
-      return 'AI 服務暫時未能使用（API 設定問題），請稍後再試或聯絡管理員。';
-    }
-    return 'AI 暫時用唔到（API 設定問題），請稍後再試或聯絡管理員。';
-  }
-
-  if (lang === 'en') return 'Sorry, AI is temporarily unavailable. Please try again later.';
-  if (lang === 'zh-written') return '抱歉，AI 暫時未能回應，請稍後再試。';
-  return '抱歉，AI 暫時未能回應，請稍後再試。';
+export function formatErrorMessage(error: unknown): string {
+  if (error instanceof Error) return error.message;
+  return String(error);
 }

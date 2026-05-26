@@ -3,7 +3,8 @@ import type { Bot } from 'grammy';
 import type { AppConfig } from '../config.js';
 import { buildChatSystemPrompt } from '../ai/system-prompt.js';
 import { runAgent, runMatchAnalysis } from '../ai/deepseek.js';
-import { userFacingAiError } from '../ai/health.js';
+import { userFacingAiError, formatErrorMessage } from '../ai/health.js';
+import { formatAdminErrorAlert, notifyAdminThrottled } from './admin-notify.js';
 import { getLatestSystemPrompt } from '../db/agents.js';
 import { getMatch, setMatchTargetMessageId, updateMatchStatus } from '../db/matches.js';
 import { getChatHistory, logMessage } from '../db/messages.js';
@@ -500,7 +501,24 @@ async function handleChat(
 
   const basePrompt = await getLatestSystemPrompt(app.config, agentFunction, stage);
   if (!basePrompt.trim()) {
-    await ctx.reply('AI 服務暫時未能載入設定，請稍後再試。');
+    const err = 'Empty system prompt from database';
+    logError('ai', err, { userId: from.id, agentFunction, stage });
+    await notifyAdminThrottled(
+      ctx.api,
+      app.botInfo.bot_admin_id,
+      'ai:empty-prompt',
+      formatAdminErrorAlert({
+        category: 'AI / empty prompt',
+        error: err,
+        bot: app.botInfo.bot_username,
+        mode: app.config.BOT_MODE,
+        userId: from.id,
+        username: from.username,
+        stage,
+        userMessage: cleanText,
+      }),
+    );
+    await ctx.reply(userFacingAiError(profile?.preferred_language));
     return;
   }
 
@@ -537,12 +555,28 @@ async function handleChat(
       maxIterations: app.config.AGENT_MAX_ITERATIONS,
     });
   } catch (error) {
+    const errMsg = formatErrorMessage(error);
     logError('ai', 'Agent failed', {
       userId: from.id,
-      error: error instanceof Error ? error.message : String(error),
+      error: errMsg,
     });
     console.error('AI agent error:', error);
-    reply = userFacingAiError(error, profile?.preferred_language);
+    await notifyAdminThrottled(
+      ctx.api,
+      app.botInfo.bot_admin_id,
+      `ai:${errMsg.slice(0, 80)}`,
+      formatAdminErrorAlert({
+        category: 'AI / agent',
+        error: errMsg,
+        bot: app.botInfo.bot_username,
+        mode: app.config.BOT_MODE,
+        userId: from.id,
+        username: from.username,
+        stage,
+        userMessage: cleanText,
+      }),
+    );
+    reply = userFacingAiError(profile?.preferred_language);
   }
 
   logInfo('message', 'AI reply sent', {

@@ -2,9 +2,12 @@ import type { Api } from 'grammy';
 import type { AppConfig } from '../config.js';
 import {
   checkPostResponsesComplete,
+  getPostFieldDefs,
   getPostResponseMap,
   savePostResponse,
 } from '../db/post-fields.js';
+import { matchChoiceOption, DEFAULT_FIELD_OPTIONS } from '../bot/field-choices.js';
+import { getFieldOptions } from '../bot/choice-flow.js';
 import {
   getProfile,
   isProfileComplete,
@@ -132,8 +135,10 @@ async function editGInfo(ctx: ToolContext, args: Record<string, unknown>) {
 
   if (!value) return gateError('value cannot be empty');
 
-  if (field === 'gender' && !['M', 'F', '男', '女'].includes(value)) {
-    return gateError('gender must be M/F or 男/女');
+  if (field === 'gender') {
+    if (!['M', 'F', '男', '女'].includes(value)) {
+      return gateError('性別只有「男」或「女」，必須選擇其中一項');
+    }
   }
 
   if (field === 'dob') {
@@ -162,7 +167,23 @@ async function savePostData(ctx: ToolContext, args: Record<string, unknown>) {
   if (blocked) return blocked;
 
   const item = String(args.item);
-  const content = String(args.content);
+  let content = String(args.content).trim();
+  if (!content) return gateError('content cannot be empty');
+
+  const defs = await getPostFieldDefs(ctx.config);
+  const def = defs.find((d) => d.field_key === item);
+  const isChoice =
+    def?.field_type === 'choice' ||
+    (!def?.field_type && item in DEFAULT_FIELD_OPTIONS);
+  if (isChoice && def) {
+    const options = getFieldOptions(def);
+    const matched = matchChoiceOption(options, content);
+    if (!matched) {
+      return gateError(`「${def.label_zh}」必須從以下選項選擇：${options.join('、')}`);
+    }
+    content = matched;
+  }
+
   await savePostResponse(ctx.config, userId, item, content);
   await resetUserPostDraft(ctx.config, userId);
 

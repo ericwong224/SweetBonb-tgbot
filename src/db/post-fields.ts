@@ -5,6 +5,8 @@ import { execute, query } from './client.js';
 export interface PostFieldDef extends RowDataPacket {
   field_key: string;
   label_zh: string;
+  field_type?: 'text' | 'choice';
+  options_json: unknown;
   sort_order: number;
   required: number;
   hint: string | null;

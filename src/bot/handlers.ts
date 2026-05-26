@@ -5,6 +5,13 @@ import { buildChatSystemPrompt } from '../ai/system-prompt.js';
 import { runAgent, runMatchAnalysis } from '../ai/deepseek.js';
 import { userFacingAiError, formatErrorMessage } from '../ai/health.js';
 import { formatAdminErrorAlert, notifyAdminThrottled } from './admin-notify.js';
+import {
+  applyFieldChoice,
+  applyGenderChoice,
+  ensureGenderOrPrompt,
+  ensurePostChoiceOrPrompt,
+  matchReplyKeyboard,
+} from './choice-flow.js';
 import { getLatestSystemPrompt } from '../db/agents.js';
 import { getMatch, setMatchTargetMessageId, updateMatchStatus } from '../db/matches.js';
 import { getChatHistory, logMessage } from '../db/messages.js';
@@ -123,25 +130,93 @@ export function registerHandlers(bot: Bot, app: AppContext) {
 
   bot.on('callback_query:data', async (ctx) => {
     const data = ctx.callbackQuery.data;
-    if (!data.startsWith('lang:')) return;
 
-    const lang = data.slice(5) as UserLanguage;
-    if (!['zh-spoken', 'zh-written', 'en'].includes(lang)) {
-      await ctx.answerCallbackQuery({ text: 'Invalid language' });
+    if (data.startsWith('lang:')) {
+      const lang = data.slice(5) as UserLanguage;
+      if (!['zh-spoken', 'zh-written', 'en'].includes(lang)) {
+        await ctx.answerCallbackQuery({ text: 'Invalid language' });
+        return;
+      }
+
+      await withUserLock(ctx, app, async () => {
+        await syncUser(ctx, app.config);
+        await applyLanguageChoice(ctx, app.config, lang, app.botInfo);
+        await handleChat(
+          ctx,
+          app,
+          toolContext(ctx.from?.id),
+          WELCOME_AFTER_LANGUAGE,
+          { skipLanguageCheck: true },
+        );
+      });
       return;
     }
 
-    await withUserLock(ctx, app, async () => {
-      await syncUser(ctx, app.config);
-      await applyLanguageChoice(ctx, app.config, lang, app.botInfo);
-      await handleChat(
-        ctx,
-        app,
-        toolContext(ctx.from?.id),
-        WELCOME_AFTER_LANGUAGE,
-        { skipLanguageCheck: true },
-      );
-    });
+    if (data.startsWith('gender:')) {
+      const value = data.slice(7);
+      if (value !== 'M' && value !== 'F') {
+        await ctx.answerCallbackQuery({ text: 'Invalid option' });
+        return;
+      }
+
+      await withUserLock(ctx, app, async () => {
+        const from = ctx.from;
+        if (!from) return;
+        await syncUser(ctx, app.config);
+        await applyGenderChoice(ctx, app.config, from.id, value);
+        await handleChat(
+          ctx,
+          app,
+          toolContext(from.id),
+          WELCOME_AFTER_LANGUAGE,
+          { skipLanguageCheck: true, skipGenderCheck: true },
+        );
+      });
+      return;
+    }
+
+    if (data.startsWith('pick:')) {
+      const parts = data.split(':');
+      const fieldKey = parts[1];
+      const index = Number(parts[2]);
+      if (!fieldKey || Number.isNaN(index)) {
+        await ctx.answerCallbackQuery({ text: 'Invalid option' });
+        return;
+      }
+
+      await withUserLock(ctx, app, async () => {
+        const from = ctx.from;
+        if (!from) return;
+        await syncUser(ctx, app.config);
+        const ok = await applyFieldChoice(ctx, app.config, from.id, fieldKey, index);
+        if (!ok) return;
+        await handleChat(
+          ctx,
+          app,
+          toolContext(from.id),
+          WELCOME_AFTER_LANGUAGE,
+          { skipLanguageCheck: true, skipGenderCheck: true, skipPostChoiceCheck: true },
+        );
+      });
+      return;
+    }
+
+    if (data === 'match:accept' || data === 'match:reject') {
+      await withUserLock(ctx, app, async () => {
+        const from = ctx.from;
+        if (!from) return;
+        await ctx.answerCallbackQuery({
+          text: data === 'match:accept' ? '已接受' : '已拒絕',
+        });
+        const callbackMessage = ctx.callbackQuery?.message;
+        if (callbackMessage) {
+          await ctx.api
+            .deleteMessage(callbackMessage.chat.id, callbackMessage.message_id)
+            .catch(() => undefined);
+        }
+        await handleMatchReply(ctx, app, data === 'match:accept' ? 'accept' : 'reject');
+      });
+    }
   });
 
   bot.on('message:text', async (ctx) => {
@@ -328,8 +403,8 @@ async function handleMatchStart(ctx: Context, app: AppContext, matchId: number) 
       );
 
       if (tgMatch.target_id === from.id) {
-        const reply = `你收到一個配對請求：\n\n${tgMatch.initiator_snapshot ?? ''}\n\n是否接受這個配對？回覆「接受」或「拒絕」。`;
-        const sent = await ctx.reply(reply);
+        const reply = `你收到一個配對請求：\n\n${tgMatch.initiator_snapshot ?? ''}\n\n是否接受這個配對？`;
+        const sent = await ctx.reply(reply, { reply_markup: matchReplyKeyboard() });
         await setTgMatchTargetMessageId(app.config, matchId, sent.message_id);
       } else {
         await ctx.reply('配對分析：匹配。系統已向对方發出請求，請等待回覆。');
@@ -384,8 +459,8 @@ async function handleMatchStart(ctx: Context, app: AppContext, matchId: number) 
     await updateMatchStatus(app.config, matchId, 'Waiting-for-reply', analysis, matchRate);
 
     if (match.target_id === from.id) {
-      const reply = `你收到一個配對請求：\n\n${match.initiator_data ?? ''}\n\n是否接受這個配對？回覆「接受」或「拒絕」。`;
-      const sent = await ctx.reply(reply);
+      const reply = `你收到一個配對請求：\n\n${match.initiator_data ?? ''}\n\n是否接受這個配對？`;
+      const sent = await ctx.reply(reply, { reply_markup: matchReplyKeyboard() });
       await setMatchTargetMessageId(app.config, matchId, sent.message_id);
     } else {
       await ctx.reply('配對分析：匹配。系統已向对方發出請求，請等待回覆。');
@@ -434,7 +509,11 @@ async function handleChat(
   app: AppContext,
   toolCtx: ToolContext,
   userText: string,
-  options?: { skipLanguageCheck?: boolean },
+  options?: {
+    skipLanguageCheck?: boolean;
+    skipGenderCheck?: boolean;
+    skipPostChoiceCheck?: boolean;
+  },
 ) {
   await syncUser(ctx, app.config);
   const from = ctx.from;
@@ -444,6 +523,23 @@ async function handleChat(
     const langState = await ensureLanguageOrPrompt(ctx, app.config, userText, app.botInfo);
     if (langState === 'prompted') return;
     if (langState === 'just_set') {
+      userText = WELCOME_AFTER_LANGUAGE;
+    }
+  }
+
+  const profileEarly = await getProfile(app.config, from.id);
+  if (!options?.skipGenderCheck && !profileEarly?.gender) {
+    const genderState = await ensureGenderOrPrompt(ctx, app.config, userText);
+    if (genderState === 'prompted') return;
+    if (genderState === 'just_set') {
+      userText = WELCOME_AFTER_LANGUAGE;
+    }
+  }
+
+  if (!options?.skipPostChoiceCheck) {
+    const choiceState = await ensurePostChoiceOrPrompt(ctx, app.config, userText);
+    if (choiceState === 'prompted') return;
+    if (choiceState === 'just_set') {
       userText = WELCOME_AFTER_LANGUAGE;
     }
   }

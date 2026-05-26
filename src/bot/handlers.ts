@@ -18,6 +18,7 @@ import {
   ensureAcceptanceOrPrompt,
   hasAcceptanceInProgress,
 } from './acceptance-flow.js';
+import { sendUsernameReminderIfNeeded } from './profile-flow.js';
 import { getLatestSystemPrompt } from '../db/agents.js';
 import { getMatch, setMatchTargetMessageId, updateMatchStatus } from '../db/matches.js';
 import { getChatHistory, logMessage } from '../db/messages.js';
@@ -762,6 +763,7 @@ async function handleChat(
 
   if (agentFunction === 'sb-main') {
     await sendFollowUpPickers(ctx, app.config, from.id);
+    await sendUsernameReminderIfNeeded(ctx, app.config, from.id);
   }
 }
 

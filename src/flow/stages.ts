@@ -1,7 +1,7 @@
 import type { AppConfig } from '../config.js';
 import { upsertUserFlow, type UserStage } from '../db/flow-state.js';
 import { checkPostResponsesComplete } from '../db/post-fields.js';
-import { getProfile, isProfileComplete } from '../db/profile.js';
+import { getProfile, isCoreProfileComplete } from '../db/profile.js';
 import { getUserPost, isPostPublished } from '../db/user-post.js';
 
 export type { UserStage };
@@ -12,7 +12,7 @@ export async function resolveUserStage(
 ): Promise<UserStage> {
   const profile = await getProfile(config, userId);
 
-  if (!isProfileComplete(profile)) {
+  if (!isCoreProfileComplete(profile)) {
     await upsertUserFlow(config, userId, 'profile_incomplete');
     return 'profile_incomplete';
   }

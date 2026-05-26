@@ -1,5 +1,8 @@
 import type { UserProfileRow } from '../db/profile.js';
-import { getMissingBasicFields } from '../db/profile.js';
+import {
+  getMissingCoreProfileFields,
+  needsUsernameReminder,
+} from '../db/profile.js';
 import type { UserStage } from '../flow/stages.js';
 import { buildLanguagePromptBlock, getLanguageLabel, type UserLanguage } from '../i18n/language.js';
 
@@ -25,7 +28,7 @@ export function buildUserContextBlock(options: {
     return `##用戶資料\n（新用戶，資料尚未完整）\n##當前流程階段\n${stage}`;
   }
 
-  const missingBasic = getMissingBasicFields(profile);
+  const missingCore = getMissingCoreProfileFields(profile);
   const lines = [
     '##用戶資料',
     `user_id=>${profile.user_id}`,
@@ -39,8 +42,15 @@ export function buildUserContextBlock(options: {
     `##當前流程階段\n${stage}`,
   ];
 
-  if (missingBasic.length) {
-    lines.push(`##尚未完成的基本資料\n${missingBasic.join(', ')}`);
+  if (missingCore.length) {
+    lines.push(
+      `##尚未完成的基本資料（優先：性別→出生日期→居住地）\n${missingCore.join(', ')}`,
+    );
+  }
+  if (needsUsernameReminder(profile)) {
+    lines.push(
+      '##Telegram @username\n尚未設定（須用戶自行到 Telegram 設定）。基本三項完成後才提醒，勿優先詢問 username。',
+    );
   }
   if (missingPostFields.length) {
     lines.push(`##尚未完成的啟示問卷\n${missingPostFields.join(', ')}`);

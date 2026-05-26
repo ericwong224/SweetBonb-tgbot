@@ -4,6 +4,10 @@ import { TOOL_DEFINITIONS } from '../tools/definitions.js';
 import { executeTool, type ToolContext } from '../tools/handlers.js';
 import { logInfo } from '../ops/runtime-log.js';
 
+const TOOL_ROUND_NUDGE = 3;
+const FORCE_REPLY_NUDGE =
+  '[系統] 工具已執行完畢。請立即用普通文字回覆用戶，總結本輪結果並繼續下一題；不要再次呼叫工具。';
+
 export function createDeepSeekClient(config: AppConfig): OpenAI {
   return new OpenAI({
     apiKey: config.DEEPSEEK_API_KEY,
@@ -22,6 +26,28 @@ export interface RunAgentOptions {
   maxIterations?: number;
 }
 
+async function requestFinalReply(
+  client: OpenAI,
+  model: string,
+  messages: OpenAI.Chat.Completions.ChatCompletionMessageParam[],
+): Promise<string> {
+  const completion = await client.chat.completions.create({
+    model,
+    messages: [
+      ...messages,
+      {
+        role: 'user',
+        content: '請根據以上對話及工具結果，用普通文字回覆用戶（不要用 Markdown、不要呼叫工具）。',
+      },
+    ],
+    temperature: 0.7,
+  });
+  return (
+    completion.choices[0]?.message?.content?.trim() ??
+    '抱歉，我暫時未能處理你的請求，請稍後再試。'
+  );
+}
+
 export async function runAgent(options: RunAgentOptions): Promise<string> {
   const {
     config,
@@ -37,9 +63,7 @@ export async function runAgent(options: RunAgentOptions): Promise<string> {
   const client = createDeepSeekClient(config);
   const toolDefs =
     toolsEnabled && allowedToolNames?.length
-      ? TOOL_DEFINITIONS.filter((t) =>
-          allowedToolNames.includes(t.function.name),
-        )
+      ? TOOL_DEFINITIONS.filter((t) => allowedToolNames.includes(t.function.name))
       : toolsEnabled
         ? TOOL_DEFINITIONS
         : undefined;
@@ -50,14 +74,18 @@ export async function runAgent(options: RunAgentOptions): Promise<string> {
     { role: 'user', content: userMessage },
   ];
 
+  let toolRounds = 0;
+  let nudgedForReply = false;
+
   for (let i = 0; i < maxIterations; i += 1) {
+    const useTools = toolsEnabled && toolDefs && !nudgedForReply;
     let completion;
     try {
       completion = await client.chat.completions.create({
         model: config.DEEPSEEK_MODEL,
         messages,
-        tools: toolDefs,
-        tool_choice: toolsEnabled ? 'auto' : undefined,
+        tools: useTools ? toolDefs : undefined,
+        tool_choice: useTools ? 'auto' : undefined,
         temperature: 0.7,
       });
     } catch (error) {
@@ -70,7 +98,8 @@ export async function runAgent(options: RunAgentOptions): Promise<string> {
       throw new Error('DeepSeek returned empty response');
     }
 
-    if (choice.tool_calls?.length) {
+    if (choice.tool_calls?.length && useTools) {
+      toolRounds += 1;
       messages.push({
         role: 'assistant',
         content: choice.content ?? '',
@@ -87,6 +116,7 @@ export async function runAgent(options: RunAgentOptions): Promise<string> {
         const result = await executeTool(toolContext, toolCall.function.name, args);
         logInfo('ai-tool', toolCall.function.name, {
           userId: toolContext.userId,
+          round: toolRounds,
           args,
           resultPreview: JSON.stringify(result).slice(0, 200),
         });
@@ -96,6 +126,15 @@ export async function runAgent(options: RunAgentOptions): Promise<string> {
           content: JSON.stringify(result),
         });
       }
+
+      if (choice.content?.trim()) {
+        return choice.content.trim();
+      }
+
+      if (toolRounds >= TOOL_ROUND_NUDGE && !nudgedForReply) {
+        messages.push({ role: 'user', content: FORCE_REPLY_NUDGE });
+        nudgedForReply = true;
+      }
       continue;
     }
 
@@ -103,7 +142,11 @@ export async function runAgent(options: RunAgentOptions): Promise<string> {
     if (content) return content;
   }
 
-  return '抱歉，我暫時未能處理你的請求，請稍後再試。';
+  logInfo('ai', 'Agent hit max iterations; forcing final reply', {
+    userId: toolContext.userId,
+    toolRounds,
+  });
+  return requestFinalReply(client, config.DEEPSEEK_MODEL, messages);
 }
 
 export async function runMatchAnalysis(

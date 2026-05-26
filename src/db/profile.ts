@@ -14,12 +14,26 @@ export interface UserProfileRow extends RowDataPacket {
   completed_at: Date | null;
 }
 
-export function getMissingBasicFields(profile: UserProfileRow | null): string[] {
+export function getMissingCoreProfileFields(profile: UserProfileRow | null): string[] {
   const missing: string[] = [];
-  if (!profile?.telegram_username?.trim()) missing.push('telegram username');
   if (!profile?.gender) missing.push('gender');
   if (!profile?.dob) missing.push('dob');
   if (!profile?.location?.trim()) missing.push('location');
+  return missing;
+}
+
+export function isCoreProfileComplete(profile: UserProfileRow | null): boolean {
+  return getMissingCoreProfileFields(profile).length === 0;
+}
+
+export function needsUsernameReminder(profile: UserProfileRow | null): boolean {
+  return isCoreProfileComplete(profile) && !profile?.telegram_username?.trim();
+}
+
+/** All basic fields including @username (required before publish/match). */
+export function getMissingBasicFields(profile: UserProfileRow | null): string[] {
+  const missing = getMissingCoreProfileFields(profile);
+  if (!profile?.telegram_username?.trim()) missing.push('telegram username');
   return missing;
 }
 

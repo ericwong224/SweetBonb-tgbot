@@ -9,6 +9,7 @@ import {
 import { matchChoiceFieldOption, getFieldOptions } from '../bot/field-choices.js';
 import {
   getProfile,
+  isCoreProfileComplete,
   isProfileComplete,
   profileToMemberInfo,
   updateProfileField,
@@ -56,9 +57,22 @@ function gateError(message: string) {
   return { error: message, gated: true };
 }
 
-async function requireProfileComplete(ctx: ToolContext, userId: number) {
+async function requireCoreProfileComplete(ctx: ToolContext, userId: number) {
+  const profile = await getProfile(ctx.config, userId);
+  if (!isCoreProfileComplete(profile)) {
+    return gateError(`基本資料未完成：${profile ? '缺少性別/出生日期/居住地' : '找不到用戶'}`);
+  }
+  return null;
+}
+
+async function requireFullProfileComplete(ctx: ToolContext, userId: number) {
   const profile = await getProfile(ctx.config, userId);
   if (!isProfileComplete(profile)) {
+    if (isCoreProfileComplete(profile) && !profile?.telegram_username?.trim()) {
+      return gateError(
+        '請先到 Telegram → 設定 → 用戶名，自行設定 @username 後再發訊息，bot 會自動同步',
+      );
+    }
     return gateError(`基本資料未完成：${profile ? '缺少必填欄位' : '找不到用戶'}`);
   }
   return null;
@@ -134,6 +148,12 @@ async function editGInfo(ctx: ToolContext, args: Record<string, unknown>) {
 
   if (!value) return gateError('value cannot be empty');
 
+  if (field === 'username') {
+    return gateError(
+      '@username 須用戶自行到 Telegram 設定，bot 會在用戶設定後自動同步，請勿手動填入',
+    );
+  }
+
   if (field === 'gender') {
     if (!['M', 'F', '男', '女'].includes(value)) {
       return gateError('性別只有「男」或「女」，必須選擇其中一項');
@@ -155,14 +175,14 @@ async function editGInfo(ctx: ToolContext, args: Record<string, unknown>) {
 
 async function getPostData(ctx: ToolContext, args: Record<string, unknown>) {
   const userId = Number(args.user_id);
-  const blocked = await requireProfileComplete(ctx, userId);
+  const blocked = await requireCoreProfileComplete(ctx, userId);
   if (blocked) return blocked;
   return getPostResponseMap(ctx.config, userId);
 }
 
 async function savePostData(ctx: ToolContext, args: Record<string, unknown>) {
   const userId = Number(args.user_id);
-  const blocked = await requireProfileComplete(ctx, userId);
+  const blocked = await requireCoreProfileComplete(ctx, userId);
   if (blocked) return blocked;
 
   const item = String(args.item);
@@ -190,7 +210,7 @@ async function savePostData(ctx: ToolContext, args: Record<string, unknown>) {
   const profile = await getProfile(ctx.config, userId);
   const postData = await getPostResponseMap(ctx.config, userId);
 
-  if (isProfileComplete(profile) && profile?.dob && profile.gender && profile.location) {
+  if (isCoreProfileComplete(profile) && profile?.dob && profile.gender && profile.location) {
     const age = calcAge(new Date(profile.dob));
     const format = buildPostFormat2(
       profile.location,
@@ -211,7 +231,7 @@ async function savePostData(ctx: ToolContext, args: Record<string, unknown>) {
 
 async function post2draft(ctx: ToolContext, args: Record<string, unknown>) {
   const userId = Number(args.user_id);
-  const blocked = await requireProfileComplete(ctx, userId);
+  const blocked = await requireCoreProfileComplete(ctx, userId);
   if (blocked) return blocked;
   await setUserPostStatus(ctx.config, userId, 'draft');
   await resolveUserStage(ctx.config, userId);
@@ -220,14 +240,14 @@ async function post2draft(ctx: ToolContext, args: Record<string, unknown>) {
 
 async function checkPostDataTool(ctx: ToolContext, args: Record<string, unknown>) {
   const userId = Number(args.user_id);
-  const blocked = await requireProfileComplete(ctx, userId);
+  const blocked = await requireCoreProfileComplete(ctx, userId);
   if (blocked) return blocked;
   return checkPostResponsesComplete(ctx.config, userId);
 }
 
 async function post2publish(ctx: ToolContext, args: Record<string, unknown>) {
   const userId = Number(args.user_id);
-  const blocked = await requireProfileComplete(ctx, userId);
+  const blocked = await requireFullProfileComplete(ctx, userId);
   if (blocked) return blocked;
 
   const postCheck = await checkPostResponsesComplete(ctx.config, userId);
@@ -313,7 +333,7 @@ async function matchReply(ctx: ToolContext, args: Record<string, unknown>) {
 
 export async function refreshPostFormat(ctx: ToolContext, userId: number) {
   const profile = await getProfile(ctx.config, userId);
-  if (!isProfileComplete(profile) || !profile?.dob || !profile.gender || !profile.location) return;
+  if (!isCoreProfileComplete(profile) || !profile?.dob || !profile.gender || !profile.location) return;
 
   const postData = await getPostResponseMap(ctx.config, userId);
   const format = buildPostFormat2(

@@ -14,7 +14,7 @@ await c.query(
 );
 
 const [existing] = await c.query("SELECT bot_id FROM n8n_bot_info WHERE bot_mode = 'demo' LIMIT 1");
-if ((existing as unknown[]).length === 0) {
+if (existing.length === 0) {
   await c.query(`
     INSERT INTO n8n_bot_info (bot_mode, bot_username, bot_token, bot_admin_id)
     SELECT 'demo', bot_username, bot_token, bot_admin_id

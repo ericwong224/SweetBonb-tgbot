@@ -3,6 +3,7 @@ import type { Bot } from 'grammy';
 import type { AppConfig } from '../config.js';
 import { buildChatSystemPrompt } from '../ai/system-prompt.js';
 import { runAgent, runMatchAnalysis } from '../ai/deepseek.js';
+import { userFacingAiError } from '../ai/health.js';
 import { getLatestSystemPrompt } from '../db/agents.js';
 import { getMatch, setMatchTargetMessageId, updateMatchStatus } from '../db/matches.js';
 import { getChatHistory, logMessage } from '../db/messages.js';
@@ -31,6 +32,7 @@ import {
   handleHelpCommand,
   handleStatusCommand,
   sendLanguagePicker,
+  WELCOME_AFTER_LANGUAGE,
 } from './commands.js';
 import { userMessageLock } from './user-lock.js';
 import {
@@ -83,11 +85,16 @@ export function registerHandlers(bot: Bot, app: AppContext) {
 
       await syncUser(ctx, app.config);
 
-      if (!(await ensureLanguageOrPrompt(ctx, app.config, '', app.botInfo))) {
-        return;
-      }
+      const langState = await ensureLanguageOrPrompt(ctx, app.config, '', app.botInfo);
+      if (langState === 'prompted') return;
 
-      await handleChat(ctx, app, toolContext(ctx.from?.id), '你好，我剛開始使用 SweetBonb。');
+      await handleChat(
+        ctx,
+        app,
+        toolContext(ctx.from?.id),
+        WELCOME_AFTER_LANGUAGE,
+        { skipLanguageCheck: true },
+      );
     });
   });
 
@@ -123,8 +130,17 @@ export function registerHandlers(bot: Bot, app: AppContext) {
       return;
     }
 
-    await ctx.answerCallbackQuery();
-    await applyLanguageChoice(ctx, app.config, lang, app.botInfo);
+    await withUserLock(ctx, app, async () => {
+      await syncUser(ctx, app.config);
+      await applyLanguageChoice(ctx, app.config, lang, app.botInfo);
+      await handleChat(
+        ctx,
+        app,
+        toolContext(ctx.from?.id),
+        WELCOME_AFTER_LANGUAGE,
+        { skipLanguageCheck: true },
+      );
+    });
   });
 
   bot.on('message:text', async (ctx) => {
@@ -395,30 +411,40 @@ async function ensureLanguageOrPrompt(
   config: AppConfig,
   userText: string,
   botInfo: BotInfo,
-): Promise<boolean> {
+): Promise<'ready' | 'prompted' | 'just_set'> {
   const from = ctx.from;
-  if (!from) return false;
+  if (!from) return 'prompted';
 
   const profile = await getProfile(config, from.id);
-  if (!needsLanguageSelection(profile)) return true;
+  if (!needsLanguageSelection(profile)) return 'ready';
 
   const parsed = parseLanguageInput(userText);
   if (parsed) {
     await applyLanguageChoice(ctx, config, parsed, botInfo);
-    return false;
+    return 'just_set';
   }
 
   await sendLanguagePicker(ctx);
-  return false;
+  return 'prompted';
 }
 
-async function handleChat(ctx: Context, app: AppContext, toolCtx: ToolContext, userText: string) {
+async function handleChat(
+  ctx: Context,
+  app: AppContext,
+  toolCtx: ToolContext,
+  userText: string,
+  options?: { skipLanguageCheck?: boolean },
+) {
   await syncUser(ctx, app.config);
   const from = ctx.from;
   if (!from) return;
 
-  if (!(await ensureLanguageOrPrompt(ctx, app.config, userText, app.botInfo))) {
-    return;
+  if (!options?.skipLanguageCheck) {
+    const langState = await ensureLanguageOrPrompt(ctx, app.config, userText, app.botInfo);
+    if (langState === 'prompted') return;
+    if (langState === 'just_set') {
+      userText = WELCOME_AFTER_LANGUAGE;
+    }
   }
 
   logInfo('message', 'Incoming user message', {
@@ -516,7 +542,7 @@ async function handleChat(ctx: Context, app: AppContext, toolCtx: ToolContext, u
       error: error instanceof Error ? error.message : String(error),
     });
     console.error('AI agent error:', error);
-    reply = '抱歉，AI 暫時未能回應，請稍後再試。';
+    reply = userFacingAiError(error, profile?.preferred_language);
   }
 
   logInfo('message', 'AI reply sent', {

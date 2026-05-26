@@ -14,6 +14,7 @@ import {
 } from '../i18n/language.js';
 import { logInfo } from '../ops/runtime-log.js';
 import type { BotInfo } from '../db/bots.js';
+import { deleteLanguagePickerMessages, trackLanguagePicker } from './language-flow.js';
 
 export function languageKeyboard(): InlineKeyboard {
   const kb = new InlineKeyboard();
@@ -24,7 +25,10 @@ export function languageKeyboard(): InlineKeyboard {
 }
 
 export async function sendLanguagePicker(ctx: Context): Promise<void> {
-  await ctx.reply(LANGUAGE_PICK_MESSAGE, { reply_markup: languageKeyboard() });
+  const sent = await ctx.reply(LANGUAGE_PICK_MESSAGE, { reply_markup: languageKeyboard() });
+  if (ctx.from) {
+    trackLanguagePicker(ctx.from.id, sent.chat.id, sent.message_id);
+  }
 }
 
 export async function applyLanguageChoice(
@@ -42,7 +46,13 @@ export async function applyLanguageChoice(
     lang,
     bot: botInfo.bot_username,
   });
-  await ctx.reply(languageSavedMessage(lang));
+
+  await deleteLanguagePickerMessages(ctx, ctx.api);
+
+  if (ctx.callbackQuery) {
+    await ctx.answerCallbackQuery({ text: languageSavedMessage(lang) });
+    return;
+  }
 }
 
 export async function handleHelpCommand(ctx: Context, config: AppConfig): Promise<void> {
@@ -83,7 +93,9 @@ export async function handleStatusCommand(
   );
 }
 
-export async function registerBotCommands(api: { setMyCommands: (cmds: Array<{ command: string; description: string }>) => Promise<boolean> }): Promise<void> {
+export async function registerBotCommands(api: {
+  setMyCommands: (cmds: Array<{ command: string; description: string }>) => Promise<boolean>;
+}): Promise<void> {
   await api.setMyCommands([
     { command: 'start', description: '開始 / Start' },
     { command: 'help', description: '指令說明 / Help' },
@@ -91,3 +103,5 @@ export async function registerBotCommands(api: { setMyCommands: (cmds: Array<{ c
     { command: 'status', description: '查看進度 / Status' },
   ]);
 }
+
+export const WELCOME_AFTER_LANGUAGE = '你好，我剛開始使用 SweetBonb。';

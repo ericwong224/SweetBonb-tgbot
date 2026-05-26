@@ -6,7 +6,8 @@ import { createBot, createWebhookHandler, setupWebhook } from './bot/telegram.js
 import { registerBotCommands } from './bot/commands.js';
 import { startMsgCleanupJob } from './jobs/msg-cleanup.js';
 import { createLogRoutes } from './ops/log-routes.js';
-import { logInfo, logError, runtimeLog } from './ops/runtime-log.js';
+import { logError, logInfo, logWarn, runtimeLog } from './ops/runtime-log.js';
+import { verifyDeepSeekApi } from './ai/health.js';
 
 function shouldRegisterWebhook(baseUrl: string | undefined): baseUrl is string {
   if (!baseUrl) return false;
@@ -42,6 +43,15 @@ async function main() {
   botInfo = await getBotInfo(config, config.BOT_MODE);
   if (!botInfo) {
     throw new Error(`Bot info not found for mode: ${config.BOT_MODE}`);
+  }
+
+  const deepseekCheck = await verifyDeepSeekApi(config);
+  if (!deepseekCheck.ok) {
+    logWarn('boot', 'DeepSeek API check failed — AI replies will not work until DEEPSEEK_API_KEY is fixed', {
+      error: deepseekCheck.error,
+    });
+  } else {
+    logInfo('boot', 'DeepSeek API check passed');
   }
 
   const bot = createBot(config, botInfo);

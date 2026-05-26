@@ -140,7 +140,7 @@ export async function tryApplyGenderFromText(
   return true;
 }
 
-export async function tryApplyGenderFromText(
+export async function applyGenderChoice(
   ctx: Context,
   config: AppConfig,
   userId: number,

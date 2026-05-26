@@ -3,7 +3,7 @@ export const DEFAULT_FIELD_OPTIONS: Record<string, string[]> = {
   target_gender: ['男', '女'],
   member_relationship_status: ['單身', '戀愛中', '已婚', '離婚', '離異'],
   secure_pairing_options: ['顯示用戶名', '不顯示用戶名'],
-  target_relationship: ['SP', 'FWB', 'SP-只有性', 'FWB-有性有愛', 'SL', '情侶-長遠發展', 'SL-陪伴為主'],
+  target_relationship: ['SP-只有性', 'FWB-有性有愛', 'SL-陪伴為主', '情侶-長遠發展'],
   target_relationship_status: ['不限', '單身', '已婚'],
 };
 

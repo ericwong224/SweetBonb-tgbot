@@ -38,7 +38,7 @@ UPDATE tg_post_field_def SET label_zh = '期望對象身高', field_type = 'text
 UPDATE tg_post_field_def SET
   label_zh = '期望關係類型',
   field_type = 'choice',
-  options_json = '["SP","FWB","SP-只有性","FWB-有性有愛","SL","情侶-長遠發展","SL-陪伴為主"]'
+  options_json = '["SP-只有性","FWB-有性有愛","SL-陪伴為主","情侶-長遠發展"]'
 WHERE field_key = 'target_relationship';
 
 UPDATE tg_post_field_def SET

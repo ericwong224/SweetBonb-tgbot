@@ -127,11 +127,16 @@ export async function runAgent(options: RunAgentOptions): Promise<string> {
         });
       }
 
-      if (choice.content?.trim()) {
-        return choice.content.trim();
+      const interim = choice.content?.trim() ?? '';
+      const looksComplete = interim.length >= 50 || /下一題|請輸入|請選擇|？|\?/u.test(interim);
+      if (interim && looksComplete) {
+        return interim;
       }
 
-      if (toolRounds >= TOOL_ROUND_NUDGE && !nudgedForReply) {
+      if (toolRounds >= 1 && !nudgedForReply) {
+        messages.push({ role: 'user', content: FORCE_REPLY_NUDGE });
+        nudgedForReply = true;
+      } else if (toolRounds >= TOOL_ROUND_NUDGE && !nudgedForReply) {
         messages.push({ role: 'user', content: FORCE_REPLY_NUDGE });
         nudgedForReply = true;
       }

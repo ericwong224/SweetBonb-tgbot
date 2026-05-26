@@ -18,12 +18,18 @@ import {
   ensureAcceptanceOrPrompt,
   hasAcceptanceInProgress,
 } from './acceptance-flow.js';
-import { sendUsernameReminderIfNeeded } from './profile-flow.js';
+import {
+  sendUsernameReminderIfNeeded,
+  ensureCoreProfileContinuation,
+  continueAfterCoreFieldSaved,
+  getNextCoreProfileField,
+  parseDobInput,
+} from './profile-flow.js';
 import { getLatestSystemPrompt } from '../db/agents.js';
 import { getMatch, setMatchTargetMessageId, updateMatchStatus } from '../db/matches.js';
 import { getChatHistory, logMessage } from '../db/messages.js';
 import { checkPostResponsesComplete } from '../db/post-fields.js';
-import { getProfile, isProfileComplete, upsertProfileFromTelegram } from '../db/profile.js';
+import { getProfile, isCoreProfileComplete, isProfileComplete, upsertProfileFromTelegram } from '../db/profile.js';
 import {
   createTgMatch,
   findExistingTgMatch,
@@ -172,13 +178,16 @@ export function registerHandlers(bot: Bot, app: AppContext) {
         if (!from) return;
         await syncUser(ctx, app.config);
         await applyGenderChoice(ctx, app.config, from.id, value);
-        await handleChat(
-          ctx,
-          app,
-          toolContext(from.id),
-          WELCOME_AFTER_LANGUAGE,
-          { skipLanguageCheck: true, skipGenderCheck: true },
-        );
+        await continueAfterCoreFieldSaved(ctx, app.config, from.id);
+        if (isCoreProfileComplete(await getProfile(app.config, from.id))) {
+          await handleChat(
+            ctx,
+            app,
+            toolContext(from.id),
+            WELCOME_AFTER_LANGUAGE,
+            { skipLanguageCheck: true, skipGenderCheck: true, skipCoreProfileCheck: true },
+          );
+        }
       });
       return;
     }
@@ -564,6 +573,7 @@ async function handleChat(
   options?: {
     skipLanguageCheck?: boolean;
     skipGenderCheck?: boolean;
+    skipCoreProfileCheck?: boolean;
     skipPostChoiceCheck?: boolean;
     skipAcceptanceCheck?: boolean;
   },
@@ -587,6 +597,27 @@ async function handleChat(
     if (genderState === 'just_set') {
       userText = WELCOME_AFTER_LANGUAGE;
     }
+  }
+
+  const profileNow = await getProfile(app.config, from.id);
+  if (!options?.skipCoreProfileCheck && !isCoreProfileComplete(profileNow)) {
+    const skipParse =
+      userText === WELCOME_AFTER_LANGUAGE || userText === '你好，我剛開始使用 SweetBonb。';
+    if (
+      !skipParse &&
+      userText.trim() &&
+      getNextCoreProfileField(profileNow) === 'dob' &&
+      !parseDobInput(userText)
+    ) {
+      const lang = profileNow?.preferred_language ?? null;
+      await ctx.reply(
+        lang === 'en'
+          ? 'Please use YYYY-MM-DD format (must be 18+).'
+          : '出生日期請用 YYYY-MM-DD 格式（须年满 18 岁）：',
+      );
+    }
+    const coreState = await ensureCoreProfileContinuation(ctx, app.config, userText);
+    if (coreState === 'prompted' || coreState === 'just_set') return;
   }
 
   if (!options?.skipPostChoiceCheck) {

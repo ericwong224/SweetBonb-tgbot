@@ -2,6 +2,8 @@
 
 Node.js replacement for the N8N-based `@sweetbonb_bot` Telegram AI assistant.
 
+Repository: [ericwong224/SweetBonb-tgbot](https://github.com/ericwong224/SweetBonb-tgbot)
+
 ## Stack
 
 - Hono webhook server

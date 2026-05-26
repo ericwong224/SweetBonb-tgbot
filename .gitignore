@@ -3,5 +3,7 @@ dist/
 .env
 .env.local
 *.log
+*.log.gz
+build.log.gz
 .DS_Store
 agent-tools/

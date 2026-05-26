@@ -1,5 +1,17 @@
 import { z } from 'zod';
 
+/** DO/App Platform env vars are strings — z.coerce.boolean() treats "false" as true. */
+function envBool(defaultValue: boolean) {
+  return z.preprocess((val) => {
+    if (val === undefined || val === null || val === '') return defaultValue;
+    if (typeof val === 'boolean') return val;
+    const s = String(val).trim().toLowerCase();
+    if (['true', '1', 'yes', 'on'].includes(s)) return true;
+    if (['false', '0', 'no', 'off'].includes(s)) return false;
+    return defaultValue;
+  }, z.boolean());
+}
+
 const envSchema = z.object({
   PORT: z.coerce.number().default(8080),
   NODE_ENV: z.enum(['development', 'production', 'test']).default('production'),
@@ -19,12 +31,12 @@ const envSchema = z.object({
   CHAT_HISTORY_LIMIT: z.coerce.number().default(20),
   AGENT_MAX_ITERATIONS: z.coerce.number().default(30),
   /** Reply "收到" only — for webhook smoke test */
-  TEST_MESSAGE_ACK: z.coerce.boolean().default(false),
-  MSG_CLEANUP_ENABLED: z.coerce.boolean().default(true),
+  TEST_MESSAGE_ACK: envBool(false),
+  MSG_CLEANUP_ENABLED: envBool(true),
   MSG_CLEANUP_INTERVAL_MS: z.coerce.number().default(60_000),
   MSG_CLEANUP_INACTIVE_HOURS: z.coerce.number().default(24),
   MSG_CLEANUP_MAX_AGE_HOURS: z.coerce.number().default(36),
-  OPS_LOG_ENABLED: z.coerce.boolean().default(true),
+  OPS_LOG_ENABLED: envBool(true),
   OPS_LOG_TOKEN: z.string().min(8).optional(),
   OPS_LOG_MAX_ENTRIES: z.coerce.number().default(500),
 });

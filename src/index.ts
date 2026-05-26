@@ -70,7 +70,11 @@ async function main() {
   }
 
   ready = true;
-  logInfo('boot', 'Bot ready', { bot: botInfo.bot_username, mode: config.BOT_MODE });
+  logInfo('boot', 'Bot ready', {
+    bot: botInfo.bot_username,
+    mode: config.BOT_MODE,
+    testMessageAck: config.TEST_MESSAGE_ACK,
+  });
   console.log(`Bot ready: @${botInfo.bot_username} (${config.BOT_MODE})`);
   if (config.OPS_LOG_ENABLED) {
     console.log(`Live log: ${config.WEBHOOK_BASE_URL ?? `http://localhost:${config.PORT}`}/ops/logs?token=<OPS_LOG_TOKEN>`);

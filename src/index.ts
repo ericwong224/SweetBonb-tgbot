@@ -42,7 +42,11 @@ async function main() {
   app.post('/webhook/telegram', async (c) => webhookHandler(c));
 
   if (shouldRegisterWebhook(config.WEBHOOK_BASE_URL)) {
-    await setupWebhook(bot, config.WEBHOOK_BASE_URL, config.TELEGRAM_WEBHOOK_SECRET);
+    try {
+      await setupWebhook(bot, config.WEBHOOK_BASE_URL, config.TELEGRAM_WEBHOOK_SECRET);
+    } catch (error) {
+      console.error('Webhook registration failed (bot will still serve /webhook/telegram):', error);
+    }
   } else if (!config.WEBHOOK_BASE_URL) {
     console.warn('WEBHOOK_BASE_URL not set; webhook not registered (use for local dev only).');
   }

@@ -10,7 +10,12 @@ const envSchema = z.object({
   TELEGRAM_BOT_TOKEN: z.string().optional(),
   TELEGRAM_BOT_USERNAME: z.string().optional(),
   WEBHOOK_BASE_URL: z.string().url().optional(),
-  TELEGRAM_WEBHOOK_SECRET: z.string().min(8).default('sweetbonb-webhook-secret'),
+  TELEGRAM_WEBHOOK_SECRET: z
+    .string()
+    .min(8)
+    .max(256)
+    .regex(/^[A-Za-z0-9_-]+$/, 'Use only letters, numbers, underscore, and hyphen')
+    .default('sweetbonb-webhook-secret'),
   CHAT_HISTORY_LIMIT: z.coerce.number().default(20),
 });
 

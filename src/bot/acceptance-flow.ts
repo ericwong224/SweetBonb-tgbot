@@ -1,0 +1,176 @@
+import { InlineKeyboard } from 'grammy';
+import type { Context } from 'grammy';
+import type { AppConfig } from '../config.js';
+import { getPostResponseMap, savePostResponse } from '../db/post-fields.js';
+import { getProfile } from '../db/profile.js';
+import { resolveUserStage } from '../flow/stages.js';
+import { logInfo } from '../ops/runtime-log.js';
+import { deleteMessageSafe } from './language-flow.js';
+import { WELCOME_AFTER_LANGUAGE } from './commands.js';
+
+export const ACCEPTANCE_ITEMS_F = ['接吻', '為對方口交', 'SM', '野戰'];
+export const ACCEPTANCE_ITEMS_M = ['接吻', '為對方口交', '口爆', '無套', '內射', '肛交', 'SM', '野戰'];
+
+export const ACCEPTANCE_LEVELS = [
+  { label: '✅ 可以', emoji: '✅' },
+  { label: '❌ 唔得', emoji: '❌' },
+  { label: '❓ 視乎情況', emoji: '❓' },
+] as const;
+
+interface AcceptanceProgress {
+  items: string[];
+  answers: string[];
+  index: number;
+}
+
+const progressByUser = new Map<number, AcceptanceProgress>();
+
+export function hasAcceptanceInProgress(userId: number): boolean {
+  return progressByUser.has(userId);
+}
+
+function targetGenderLabel(raw: string | undefined): '男' | '女' | null {
+  if (!raw) return null;
+  const t = raw.trim();
+  if (t === '男' || t === 'M' || t.toLowerCase() === 'male') return '男';
+  if (t === '女' || t === 'F' || t.toLowerCase() === 'female') return '女';
+  return null;
+}
+
+export function acceptanceItemsForTarget(targetGender: '男' | '女'): string[] {
+  return targetGender === '女' ? [...ACCEPTANCE_ITEMS_F] : [...ACCEPTANCE_ITEMS_M];
+}
+
+export function formatAcceptanceQuestionnaire(items: string[], emojis: string[]): string {
+  return items.map((item, i) => `${emojis[i] ?? '❓'}${item}`).join(' ');
+}
+
+export function acceptanceKeyboard(itemIndex: number): InlineKeyboard {
+  const kb = new InlineKeyboard();
+  ACCEPTANCE_LEVELS.forEach((level, levelIndex) => {
+    kb.text(level.label, `acc:${itemIndex}:${levelIndex}`);
+  });
+  return kb;
+}
+
+export async function sendAcceptanceItemPicker(
+  ctx: Context,
+  itemIndex: number,
+  itemLabel: string,
+  lang: string | null | undefined,
+): Promise<void> {
+  const en = lang === 'en';
+  const formal = lang === 'zh-written';
+  const text = en
+    ? `Acceptance: ${itemLabel}`
+    : formal
+      ? `接受程度 — ${itemLabel}：`
+      : `接受程度 — ${itemLabel}：`;
+  await ctx.reply(text, { reply_markup: acceptanceKeyboard(itemIndex) });
+}
+
+export async function applyAcceptanceChoice(
+  ctx: Context,
+  config: AppConfig,
+  userId: number,
+  itemIndex: number,
+  levelIndex: number,
+): Promise<'next' | 'complete' | 'invalid'> {
+  const progress = progressByUser.get(userId);
+  if (!progress || itemIndex !== progress.index || itemIndex >= progress.items.length) {
+    await ctx.answerCallbackQuery({ text: '請重新開始問卷' });
+    return 'invalid';
+  }
+
+  const level = ACCEPTANCE_LEVELS[levelIndex];
+  if (!level) {
+    await ctx.answerCallbackQuery({ text: 'Invalid option' });
+    return 'invalid';
+  }
+
+  progress.answers[itemIndex] = level.emoji;
+  progress.index += 1;
+
+  const callbackMessage = ctx.callbackQuery?.message;
+  if (callbackMessage) {
+    await deleteMessageSafe(ctx.api, callbackMessage.chat.id, callbackMessage.message_id);
+  }
+
+  const item = progress.items[itemIndex] ?? '';
+  await ctx.answerCallbackQuery({ text: `${item}：${level.label}` });
+
+  if (progress.index >= progress.items.length) {
+    const formatted = formatAcceptanceQuestionnaire(progress.items, progress.answers);
+    await savePostResponse(config, userId, 'acceptance_questionnaire', formatted);
+    await resolveUserStage(config, userId);
+    progressByUser.delete(userId);
+    logInfo('post', 'Acceptance questionnaire complete', { userId, formatted });
+    await ctx.reply('已記錄接受程度問卷 ✅');
+    return 'complete';
+  }
+
+  const profile = await getProfile(config, userId);
+  await sendAcceptanceItemPicker(
+    ctx,
+    progress.index,
+    progress.items[progress.index] ?? '',
+    profile?.preferred_language ?? null,
+  );
+  return 'next';
+}
+
+export async function ensureAcceptanceOrPrompt(
+  ctx: Context,
+  config: AppConfig,
+  userText: string,
+  options?: { forcePrompt?: boolean },
+): Promise<'ready' | 'prompted' | 'just_set'> {
+  const from = ctx.from;
+  if (!from) return 'prompted';
+
+  const postData = await getPostResponseMap(config, from.id);
+  if (postData.acceptance_questionnaire?.trim()) {
+    progressByUser.delete(from.id);
+    return 'ready';
+  }
+
+  const targetGender = targetGenderLabel(postData.target_gender);
+  if (!targetGender) return 'ready';
+
+  const existing = progressByUser.get(from.id);
+  if (existing) {
+    const profile = await getProfile(config, from.id);
+    const skipPrompt =
+      userText === WELCOME_AFTER_LANGUAGE || userText === '你好，我剛開始使用 SweetBonb。';
+    if (!skipPrompt && userText.trim()) {
+      await ctx.reply('請用下面按鈕選擇接受程度：');
+    }
+    await sendAcceptanceItemPicker(
+      ctx,
+      existing.index,
+      existing.items[existing.index] ?? '',
+      profile?.preferred_language ?? null,
+    );
+    return 'prompted';
+  }
+
+  if (!options?.forcePrompt && userText === WELCOME_AFTER_LANGUAGE) {
+    return 'ready';
+  }
+
+  const items = acceptanceItemsForTarget(targetGender);
+  progressByUser.set(from.id, { items, answers: [], index: 0 });
+
+  const profile = await getProfile(config, from.id);
+  const en = profile?.preferred_language === 'en';
+  const formal = profile?.preferred_language === 'zh-written';
+  await ctx.reply(
+    en
+      ? `Acceptance questionnaire (target: ${targetGender === '女' ? 'female' : 'male'}):`
+      : formal
+        ? `請逐項選擇接受程度（對象：${targetGender}）：`
+        : `請逐項揀接受程度（對象：${targetGender}）：`,
+  );
+  await sendAcceptanceItemPicker(ctx, 0, items[0] ?? '', profile?.preferred_language ?? null);
+  return 'prompted';
+}

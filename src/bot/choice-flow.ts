@@ -283,3 +283,21 @@ export async function ensurePostChoiceOrPrompt(
   await sendFieldChoicePicker(ctx, from.id, next.field, next.options, profile?.preferred_language ?? null);
   return 'prompted';
 }
+
+export async function sendFollowUpPickers(
+  ctx: Context,
+  config: AppConfig,
+  userId: number,
+): Promise<void> {
+  const profile = await getProfile(config, userId);
+  const lang = profile?.preferred_language ?? null;
+
+  const { ensureAcceptanceOrPrompt } = await import('./acceptance-flow.js');
+  const acc = await ensureAcceptanceOrPrompt(ctx, config, '', { forcePrompt: true });
+  if (acc === 'prompted') return;
+
+  const next = await getNextMissingChoiceField(config, userId);
+  if (!next) return;
+
+  await sendFieldChoicePicker(ctx, userId, next.field, next.options, lang);
+}

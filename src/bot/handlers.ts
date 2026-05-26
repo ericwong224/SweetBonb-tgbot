@@ -11,7 +11,13 @@ import {
   ensureGenderOrPrompt,
   ensurePostChoiceOrPrompt,
   matchReplyKeyboard,
+  sendFollowUpPickers,
 } from './choice-flow.js';
+import {
+  applyAcceptanceChoice,
+  ensureAcceptanceOrPrompt,
+  hasAcceptanceInProgress,
+} from './acceptance-flow.js';
 import { getLatestSystemPrompt } from '../db/agents.js';
 import { getMatch, setMatchTargetMessageId, updateMatchStatus } from '../db/matches.js';
 import { getChatHistory, logMessage } from '../db/messages.js';
@@ -195,8 +201,51 @@ export function registerHandlers(bot: Bot, app: AppContext) {
           app,
           toolContext(from.id),
           WELCOME_AFTER_LANGUAGE,
-          { skipLanguageCheck: true, skipGenderCheck: true, skipPostChoiceCheck: true },
+          {
+            skipLanguageCheck: true,
+            skipGenderCheck: true,
+            skipPostChoiceCheck: true,
+            skipAcceptanceCheck: true,
+          },
         );
+      });
+      return;
+    }
+
+    if (data.startsWith('acc:')) {
+      const parts = data.split(':');
+      const itemIndex = Number(parts[1]);
+      const levelIndex = Number(parts[2]);
+      if (Number.isNaN(itemIndex) || Number.isNaN(levelIndex)) {
+        await ctx.answerCallbackQuery({ text: 'Invalid option' });
+        return;
+      }
+
+      await withUserLock(ctx, app, async () => {
+        const from = ctx.from;
+        if (!from) return;
+        await syncUser(ctx, app.config);
+        const result = await applyAcceptanceChoice(
+          ctx,
+          app.config,
+          from.id,
+          itemIndex,
+          levelIndex,
+        );
+        if (result === 'complete') {
+          await handleChat(
+            ctx,
+            app,
+            toolContext(from.id),
+            WELCOME_AFTER_LANGUAGE,
+            {
+              skipLanguageCheck: true,
+              skipGenderCheck: true,
+              skipPostChoiceCheck: true,
+              skipAcceptanceCheck: true,
+            },
+          );
+        }
       });
       return;
     }
@@ -216,6 +265,7 @@ export function registerHandlers(bot: Bot, app: AppContext) {
         }
         await handleMatchReply(ctx, app, data === 'match:accept' ? 'accept' : 'reject');
       });
+      return;
     }
   });
 
@@ -513,6 +563,7 @@ async function handleChat(
     skipLanguageCheck?: boolean;
     skipGenderCheck?: boolean;
     skipPostChoiceCheck?: boolean;
+    skipAcceptanceCheck?: boolean;
   },
 ) {
   await syncUser(ctx, app.config);
@@ -540,6 +591,14 @@ async function handleChat(
     const choiceState = await ensurePostChoiceOrPrompt(ctx, app.config, userText);
     if (choiceState === 'prompted') return;
     if (choiceState === 'just_set') {
+      userText = WELCOME_AFTER_LANGUAGE;
+    }
+  }
+
+  if (!options?.skipAcceptanceCheck && from && hasAcceptanceInProgress(from.id)) {
+    const accState = await ensureAcceptanceOrPrompt(ctx, app.config, userText);
+    if (accState === 'prompted') return;
+    if (accState === 'just_set') {
       userText = WELCOME_AFTER_LANGUAGE;
     }
   }
@@ -699,6 +758,10 @@ async function handleChat(
     stageKey: stage,
     agentKey: agentFunction,
   });
+
+  if (agentFunction === 'sb-main' && !options?.skipAcceptanceCheck) {
+    await sendFollowUpPickers(ctx, app.config, from.id);
+  }
 }
 
 async function handleMatchReply(ctx: Context, app: AppContext, action: 'accept' | 'reject') {

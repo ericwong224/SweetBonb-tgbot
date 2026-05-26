@@ -8,10 +8,17 @@ import type { AppConfig } from '../config.js';
 
 let pool: Pool | null = null;
 
+function normalizeDatabaseUrl(url: string): string {
+  const parsed = new URL(url);
+  parsed.searchParams.delete('ssl-mode');
+  parsed.searchParams.delete('ssl_mode');
+  return parsed.toString();
+}
+
 export function getPool(config: AppConfig): Pool {
   if (!pool) {
     pool = mysql.createPool({
-      uri: config.DATABASE_URL,
+      uri: normalizeDatabaseUrl(config.DATABASE_URL),
       waitForConnections: true,
       connectionLimit: 10,
       ssl: { rejectUnauthorized: false },

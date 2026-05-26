@@ -28,7 +28,7 @@ export async function runAgent(options: RunAgentOptions): Promise<string> {
     userMessage,
     history = [],
     toolsEnabled = true,
-    maxIterations = 8,
+    maxIterations = 30,
   } = options;
 
   const client = createDeepSeekClient(config);
@@ -39,13 +39,19 @@ export async function runAgent(options: RunAgentOptions): Promise<string> {
   ];
 
   for (let i = 0; i < maxIterations; i += 1) {
-    const completion = await client.chat.completions.create({
-      model: config.DEEPSEEK_MODEL,
-      messages,
-      tools: toolsEnabled ? TOOL_DEFINITIONS : undefined,
-      tool_choice: toolsEnabled ? 'auto' : undefined,
-      temperature: 0.7,
-    });
+    let completion;
+    try {
+      completion = await client.chat.completions.create({
+        model: config.DEEPSEEK_MODEL,
+        messages,
+        tools: toolsEnabled ? TOOL_DEFINITIONS : undefined,
+        tool_choice: toolsEnabled ? 'auto' : undefined,
+        temperature: 0.7,
+      });
+    } catch (error) {
+      console.error('DeepSeek API error:', error);
+      throw error;
+    }
 
     const choice = completion.choices[0]?.message;
     if (!choice) {
@@ -60,7 +66,12 @@ export async function runAgent(options: RunAgentOptions): Promise<string> {
       });
 
       for (const toolCall of choice.tool_calls) {
-        const args = JSON.parse(toolCall.function.arguments || '{}') as Record<string, unknown>;
+        let args: Record<string, unknown> = {};
+        try {
+          args = JSON.parse(toolCall.function.arguments || '{}') as Record<string, unknown>;
+        } catch {
+          args = {};
+        }
         const result = await executeTool(toolContext, toolCall.function.name, args);
         messages.push({
           role: 'tool',

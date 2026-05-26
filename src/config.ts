@@ -17,6 +17,7 @@ const envSchema = z.object({
     .regex(/^[A-Za-z0-9_-]+$/, 'Use only letters, numbers, underscore, and hyphen')
     .default('sweetbonb-webhook-secret'),
   CHAT_HISTORY_LIMIT: z.coerce.number().default(20),
+  AGENT_MAX_ITERATIONS: z.coerce.number().default(30),
 });
 
 export type AppConfig = z.infer<typeof envSchema>;

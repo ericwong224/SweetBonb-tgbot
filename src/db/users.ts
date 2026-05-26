@@ -12,6 +12,7 @@ export interface UserRow extends RowDataPacket {
   joined: Date;
   last_online: Date | null;
   acc_active: number;
+  acc_block: number;
   location: string | null;
   post_on: 'draft' | 'on-hold' | 'publish' | null;
   post_format_2: string | null;
@@ -38,15 +39,20 @@ export async function upsertTelegramUser(
 ): Promise<void> {
   await execute(
     config,
-    `INSERT INTO users (user_id, username, first_name, last_name, last_online)
-     VALUES (?, ?, ?, ?, NOW())
+    `INSERT INTO users (user_id, username, first_name, last_name, last_online, joined, acc_active)
+     VALUES (?, ?, ?, ?, NOW(), NOW(), 1)
      ON DUPLICATE KEY UPDATE
        username = COALESCE(VALUES(username), username),
        first_name = COALESCE(VALUES(first_name), first_name),
        last_name = COALESCE(VALUES(last_name), last_name),
-       last_online = NOW()`,
+       last_online = NOW(),
+       acc_active = 1`,
     [data.userId, data.username ?? null, data.firstName ?? null, data.lastName ?? null],
   );
+}
+
+export function isUserBlocked(user: UserRow | null): boolean {
+  return user?.acc_block === 1;
 }
 
 export async function updateUserField(

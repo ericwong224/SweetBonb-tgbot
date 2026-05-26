@@ -78,6 +78,20 @@ export const TOOL_DEFINITIONS: OpenAI.Chat.Completions.ChatCompletionTool[] = [
   {
     type: 'function',
     function: {
+      name: 'post2draft',
+      description: 'Set user post status to draft (stop publishing)',
+      parameters: {
+        type: 'object',
+        properties: {
+          user_id: { type: 'integer' },
+        },
+        required: ['user_id'],
+      },
+    },
+  },
+  {
+    type: 'function',
+    function: {
       name: 'channel_info',
       description: 'List supported Telegram channels and areas',
       parameters: { type: 'object', properties: {} },

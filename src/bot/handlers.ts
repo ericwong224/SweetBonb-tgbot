@@ -1,12 +1,13 @@
 import type { Context } from 'grammy';
 import type { Bot } from 'grammy';
 import type { AppConfig } from '../config.js';
+import { buildChatSystemPrompt } from '../ai/system-prompt.js';
+import { runAgent, runMatchAnalysis } from '../ai/deepseek.js';
 import { getLatestSystemPrompt } from '../db/agents.js';
 import { getMatch, setMatchTargetMessageId, updateMatchStatus } from '../db/matches.js';
 import { getChatHistory, logMessage } from '../db/messages.js';
-import { runAgent, runMatchAnalysis } from '../ai/deepseek.js';
 import type { ToolContext } from '../tools/handlers.js';
-import { getUser, upsertTelegramUser } from '../db/users.js';
+import { getUser, isUserBlocked, upsertTelegramUser } from '../db/users.js';
 import { splitTelegramMessage, normalizeMatchResult, parseMatchStart } from '../utils/text.js';
 import type { BotInfo } from '../db/bots.js';
 
@@ -15,8 +16,14 @@ export interface AppContext {
   botInfo: BotInfo;
 }
 
+const BLOCKED_USER_MESSAGE = '不好意思!\n您的活動已被封鎖，請聯絡 @sexycandyhk';
+
 export function registerHandlers(bot: Bot, app: AppContext) {
-  const toolContext = (): ToolContext => ({ config: app.config, api: bot.api });
+  const toolContext = (userId?: number): ToolContext => ({
+    config: app.config,
+    api: bot.api,
+    userId,
+  });
 
   bot.command('start', async (ctx) => {
     const text = ctx.message?.text ?? '/start';
@@ -27,12 +34,12 @@ export function registerHandlers(bot: Bot, app: AppContext) {
       return;
     }
 
-    await handleChat(ctx, app, toolContext(), '你好，我剛開始使用 SweetBonb。');
+    await handleChat(ctx, app, toolContext(ctx.from?.id), '你好，我剛開始使用 SweetBonb。');
   });
 
   bot.on('message:text', async (ctx) => {
     if (ctx.message.text.startsWith('/')) return;
-    await handleChat(ctx, app, toolContext(), ctx.message.text);
+    await handleChat(ctx, app, toolContext(ctx.from?.id), ctx.message.text);
   });
 }
 
@@ -109,6 +116,19 @@ async function handleChat(ctx: Context, app: AppContext, toolCtx: ToolContext, u
 
   const user = await getUser(app.config, from.id);
 
+  if (isUserBlocked(user)) {
+    await ctx.reply(BLOCKED_USER_MESSAGE);
+    await logMessage(app.config, {
+      userId: from.id,
+      username: from.username,
+      botHandle: app.botInfo.bot_username,
+      msgType: 'send-ai-reply',
+      msgContent: BLOCKED_USER_MESSAGE,
+      chatId: ctx.chat?.id,
+    });
+    return;
+  }
+
   const acceptReject = userText.trim();
   if (acceptReject === '接受' || acceptReject === '拒絕') {
     await handleMatchReply(ctx, app, acceptReject === '接受' ? 'accept' : 'reject');
@@ -132,7 +152,18 @@ async function handleChat(ctx: Context, app: AppContext, toolCtx: ToolContext, u
 
   await ctx.api.sendChatAction(from.id, 'typing');
 
-  const systemPrompt = await getLatestSystemPrompt(app.config, agentFunction);
+  const basePrompt = await getLatestSystemPrompt(app.config, agentFunction);
+  if (!basePrompt.trim()) {
+    await ctx.reply('AI 服務暫時未能載入設定，請稍後再試。');
+    return;
+  }
+
+  const systemPrompt = buildChatSystemPrompt({
+    basePrompt,
+    agentFunction,
+    user,
+  });
+
   const history = await getChatHistory(
     app.config,
     from.id,
@@ -140,14 +171,21 @@ async function handleChat(ctx: Context, app: AppContext, toolCtx: ToolContext, u
     app.config.CHAT_HISTORY_LIMIT,
   );
 
-  const reply = await runAgent({
-    config: app.config,
-    toolContext: toolCtx,
-    systemPrompt,
-    userMessage: cleanText,
-    history,
-    toolsEnabled: agentFunction === 'sb-main',
-  });
+  let reply: string;
+  try {
+    reply = await runAgent({
+      config: app.config,
+      toolContext: { ...toolCtx, userId: from.id },
+      systemPrompt,
+      userMessage: cleanText,
+      history,
+      toolsEnabled: agentFunction === 'sb-main',
+      maxIterations: app.config.AGENT_MAX_ITERATIONS,
+    });
+  } catch (error) {
+    console.error('AI agent error:', error);
+    reply = '抱歉，AI 暫時未能回應，請稍後再試。';
+  }
 
   for (const chunk of splitTelegramMessage(reply)) {
     await ctx.reply(chunk);

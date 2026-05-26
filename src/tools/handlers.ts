@@ -1,5 +1,6 @@
 import type { Api } from 'grammy';
 import type { AppConfig } from '../config.js';
+import { execute } from '../db/client.js';
 import { getPendingMatchRequests, updateMatchStatus } from '../db/matches.js';
 import {
   buildPostFormat2,
@@ -20,6 +21,17 @@ import {
 export interface ToolContext {
   config: AppConfig;
   api: Api;
+  userId?: number;
+}
+
+function withDefaultUserId(
+  ctx: ToolContext,
+  args: Record<string, unknown>,
+): Record<string, unknown> {
+  if (ctx.userId != null && (args.user_id == null || args.user_id === '')) {
+    return { ...args, user_id: ctx.userId };
+  }
+  return args;
 }
 
 export async function executeTool(
@@ -27,25 +39,29 @@ export async function executeTool(
   name: string,
   args: Record<string, unknown>,
 ): Promise<unknown> {
+  const resolvedArgs = withDefaultUserId(ctx, args);
+
   switch (name) {
     case 'member_info':
-      return memberInfo(ctx, args);
+      return memberInfo(ctx, resolvedArgs);
     case 'edit_g_info':
-      return editGInfo(ctx, args);
+      return editGInfo(ctx, resolvedArgs);
     case 'get_post_data':
-      return getPostData(ctx, args);
+      return getPostData(ctx, resolvedArgs);
     case 'save_post_data':
-      return savePostData(ctx, args);
+      return savePostData(ctx, resolvedArgs);
     case 'check_post_data':
-      return checkPostDataTool(ctx, args);
+      return checkPostDataTool(ctx, resolvedArgs);
+    case 'post2draft':
+      return post2draft(ctx, resolvedArgs);
     case 'channel_info':
       return channelInfo(ctx);
     case 'check_member':
-      return checkMember(ctx, args);
+      return checkMember(ctx, resolvedArgs);
     case 'match_request':
-      return matchRequest(ctx, args);
+      return matchRequest(ctx, resolvedArgs);
     case 'match_reply':
-      return matchReply(ctx, args);
+      return matchReply(ctx, resolvedArgs);
     default:
       return { error: `Unknown tool: ${name}` };
   }
@@ -85,6 +101,13 @@ async function savePostData(ctx: ToolContext, args: Record<string, unknown>) {
   const content = String(args.content);
   await savePostDataItem(ctx.config, userId, item, content);
 
+  await execute(
+    ctx.config,
+    `UPDATE users SET post_on = 'draft', post_format_1 = NULL, post_format_2 = NULL,
+     post_format_footer = NULL, post_channel_id = NULL WHERE user_id = ?`,
+    [userId],
+  );
+
   const user = await getUser(ctx.config, userId);
   const postData = await getPostDataMap(ctx.config, userId);
   postData[item] = content;
@@ -105,6 +128,12 @@ async function savePostData(ctx: ToolContext, args: Record<string, unknown>) {
   }
 
   return { success: true, item, content };
+}
+
+async function post2draft(ctx: ToolContext, args: Record<string, unknown>) {
+  const userId = Number(args.user_id);
+  await updatePostStatus(ctx.config, userId, 'draft');
+  return { success: true, user_id: userId, post_on: 'draft' };
 }
 
 async function checkPostDataTool(ctx: ToolContext, args: Record<string, unknown>) {

@@ -40,6 +40,7 @@ services:
         scope: RUN_TIME
         type: SECRET
       - key: WEBHOOK_BASE_URL
+        value: https://sweetbonb-tg-bot-ege7y.ondigitalocean.app
         scope: RUN_TIME
 
 alerts:

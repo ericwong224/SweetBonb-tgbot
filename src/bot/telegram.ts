@@ -20,6 +20,11 @@ export async function setupWebhook(
   secret: string,
 ): Promise<void> {
   const url = `${webhookBaseUrl.replace(/\/$/, '')}/webhook/telegram`;
-  await bot.api.setWebhook(url, { secret_token: secret, drop_pending_updates: false });
+  // Empty allowed_updates receives all types; omitting keeps N8N's old filter (e.g. channel_post only).
+  await bot.api.setWebhook(url, {
+    secret_token: secret,
+    drop_pending_updates: false,
+    allowed_updates: [],
+  });
   console.log(`Webhook registered: ${url}`);
 }

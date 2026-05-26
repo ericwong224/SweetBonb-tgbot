@@ -14,7 +14,7 @@ import {
   DEFAULT_FIELD_OPTIONS,
   GENDER_OPTIONS,
   genderLabel,
-  matchChoiceOption,
+  matchChoiceFieldOption,
   parseGenderInput,
   parseOptionsJson,
 } from './field-choices.js';
@@ -43,11 +43,19 @@ export function resolveChoiceIndex(userId: number, fieldKey: string, index: numb
   return options[index] ?? null;
 }
 
-export function fieldChoiceKeyboard(userId: number, fieldKey: string, options: string[]): InlineKeyboard {
+export function fieldChoiceKeyboard(
+  userId: number,
+  fieldKey: string,
+  options: string[],
+): InlineKeyboard {
   storeChoiceOptions(userId, fieldKey, options);
   const kb = new InlineKeyboard();
+  const columns = fieldKey === 'target_age' ? 2 : 1;
   options.forEach((label, index) => {
-    kb.text(label, `pick:${fieldKey}:${index}`).row();
+    kb.text(label, `pick:${fieldKey}:${index}`);
+    if ((index + 1) % columns === 0 || index === options.length - 1) {
+      kb.row();
+    }
   });
   return kb;
 }
@@ -85,11 +93,18 @@ export async function sendFieldChoicePicker(
   const formal = lang === 'zh-written';
   const en = lang === 'en';
   const label = field.label_zh || field.field_key;
-  const text = en
-    ? `Please choose: ${label}`
-    : formal
-      ? `請選擇：${label}`
-      : `請揀：${label}`;
+  const text =
+    field.field_key === 'target_age'
+      ? en
+        ? `Please choose target age — range (e.g. 18-20) or minimum (e.g. 20+):`
+        : formal
+          ? `請選擇期望對象年齡：範圍（如 18-20）或最低年齡（如 20+，即 20 歲或以上）`
+          : `請揀期望對象年齡：範圍（如 18-20）或最低年齡（如 20+，即 20 歲或以上）`
+      : en
+        ? `Please choose: ${label}`
+        : formal
+          ? `請選擇：${label}`
+          : `請揀：${label}`;
   await ctx.reply(text, {
     reply_markup: fieldChoiceKeyboard(userId, field.field_key, options),
   });
@@ -139,7 +154,7 @@ export async function tryApplyChoiceFromText(
   options: string[],
   text: string,
 ): Promise<boolean> {
-  const matched = matchChoiceOption(options, text);
+  const matched = matchChoiceFieldOption(field.field_key, options, text);
   if (!matched) return false;
 
   await savePostResponse(config, userId, field.field_key, matched);
@@ -250,11 +265,19 @@ export async function ensurePostChoiceOrPrompt(
   if (!skipPrompt && userText.trim()) {
     const lang = profile?.preferred_language ?? null;
     const en = lang === 'en';
-    await ctx.reply(
-      en
-        ? `Please choose an option for "${next.field.label_zh}":`
-        : `請用下面按鈕選擇「${next.field.label_zh}」：`,
-    );
+    if (next.field.field_key === 'target_age') {
+      await ctx.reply(
+        en
+          ? 'Choose a range (e.g. 18-20) or minimum age (e.g. 20+):'
+          : '請選擇年齡範圍（如 18-20）或最低年齡（如 20+，即 20 歲或以上）：',
+      );
+    } else {
+      await ctx.reply(
+        en
+          ? `Please choose an option for "${next.field.label_zh}":`
+          : `請用下面按鈕選擇「${next.field.label_zh}」：`,
+      );
+    }
   }
 
   await sendFieldChoicePicker(ctx, from.id, next.field, next.options, profile?.preferred_language ?? null);

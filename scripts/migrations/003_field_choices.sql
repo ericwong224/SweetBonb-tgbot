@@ -26,7 +26,7 @@ UPDATE tg_post_field_def SET
   options_json = '["顯示用戶名","不顯示用戶名"]'
 WHERE field_key = 'secure_pairing_options';
 
-UPDATE tg_post_field_def SET label_zh = '期望對象年齡', field_type = 'text' WHERE field_key = 'target_age';
+UPDATE tg_post_field_def SET label_zh = '期望對象年齡', field_type = 'choice', options_json = '["18-20","21-25","26-30","31-35","36-40","41-45","46-50","20+","25+","30+","35+","40+","45+","50+"]' WHERE field_key = 'target_age';
 UPDATE tg_post_field_def SET label_zh = '期望對象身形', field_type = 'text' WHERE field_key = 'target_bodyshape';
 UPDATE tg_post_field_def SET
   label_zh = '尋找對象性別',

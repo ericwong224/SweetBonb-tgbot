@@ -7,6 +7,11 @@ import { resolveUserStage } from '../flow/stages.js';
 import { logInfo } from '../ops/runtime-log.js';
 import { deleteMessageSafe } from './language-flow.js';
 import { WELCOME_AFTER_LANGUAGE } from './commands.js';
+import {
+  clearQuestionPrompt,
+  markQuestionPrompted,
+  wasAcceptanceItemPrompted,
+} from './questionnaire-prompt.js';
 
 export const ACCEPTANCE_ITEMS_F = ['接吻', '為對方口交', 'SM', '野戰'];
 export const ACCEPTANCE_ITEMS_M = ['接吻', '為對方口交', '口爆', '無套', '內射', '肛交', 'SM', '野戰'];
@@ -55,10 +60,13 @@ export function acceptanceKeyboard(itemIndex: number): InlineKeyboard {
 
 export async function sendAcceptanceItemPicker(
   ctx: Context,
+  userId: number,
   itemIndex: number,
   itemLabel: string,
   lang: string | null | undefined,
 ): Promise<void> {
+  if (wasAcceptanceItemPrompted(userId, itemIndex)) return;
+
   const en = lang === 'en';
   const formal = lang === 'zh-written';
   const text = en
@@ -67,6 +75,7 @@ export async function sendAcceptanceItemPicker(
       ? `接受程度 — ${itemLabel}：`
       : `接受程度 — ${itemLabel}：`;
   await ctx.reply(text, { reply_markup: acceptanceKeyboard(itemIndex) });
+  markQuestionPrompted(userId, 'acceptance_questionnaire', 'acceptance', itemIndex);
 }
 
 export async function applyAcceptanceChoice(
@@ -102,6 +111,7 @@ export async function applyAcceptanceChoice(
   if (progress.index >= progress.items.length) {
     const formatted = formatAcceptanceQuestionnaire(progress.items, progress.answers);
     await savePostResponse(config, userId, 'acceptance_questionnaire', formatted);
+    clearQuestionPrompt(userId, 'acceptance_questionnaire');
     await resolveUserStage(config, userId);
     progressByUser.delete(userId);
     logInfo('post', 'Acceptance questionnaire complete', { userId, formatted });
@@ -112,6 +122,7 @@ export async function applyAcceptanceChoice(
   const profile = await getProfile(config, userId);
   await sendAcceptanceItemPicker(
     ctx,
+    userId,
     progress.index,
     progress.items[progress.index] ?? '',
     profile?.preferred_language ?? null,
@@ -142,11 +153,13 @@ export async function ensureAcceptanceOrPrompt(
     const profile = await getProfile(config, from.id);
     const skipPrompt =
       userText === WELCOME_AFTER_LANGUAGE || userText === '你好，我剛開始使用 SweetBonb。';
-    if (!skipPrompt && userText.trim()) {
+    if (!skipPrompt && userText.trim() && wasAcceptanceItemPrompted(from.id, existing.index)) {
       await ctx.reply('請用下面按鈕選擇接受程度：');
+      return 'prompted';
     }
     await sendAcceptanceItemPicker(
       ctx,
+      from.id,
       existing.index,
       existing.items[existing.index] ?? '',
       profile?.preferred_language ?? null,
@@ -171,6 +184,6 @@ export async function ensureAcceptanceOrPrompt(
         ? `請逐項選擇接受程度（對象：${targetGender}）：`
         : `請逐項揀接受程度（對象：${targetGender}）：`,
   );
-  await sendAcceptanceItemPicker(ctx, 0, items[0] ?? '', profile?.preferred_language ?? null);
+  await sendAcceptanceItemPicker(ctx, from.id, 0, items[0] ?? '', profile?.preferred_language ?? null);
   return 'prompted';
 }

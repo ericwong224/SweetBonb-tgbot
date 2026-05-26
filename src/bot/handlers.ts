@@ -11,11 +11,10 @@ import {
   beginQuestionnaire,
   continueQuestionnaireStep,
   ensureGenderOrPrompt,
-  ensurePostChoiceOrPrompt,
+  ensureQuestionnaireContinuation,
   matchReplyKeyboard,
   sendFollowUpPickers,
 } from './choice-flow.js';
-import { getNextMissingQuestionnaireField } from './questionnaire-order.js';
 import {
   applyAcceptanceChoice,
   ensureAcceptanceOrPrompt,
@@ -201,22 +200,7 @@ export function registerHandlers(bot: Bot, app: AppContext) {
         await syncUser(ctx, app.config);
         const ok = await applyFieldChoice(ctx, app.config, from.id, fieldKey, index);
         if (!ok) return;
-        const step = await continueQuestionnaireStep(ctx, app.config, from.id);
-        if (step === 'ai_next') {
-          await handleChat(
-            ctx,
-            app,
-            toolContext(from.id),
-            WELCOME_AFTER_LANGUAGE,
-            {
-              skipLanguageCheck: true,
-              skipGenderCheck: true,
-              skipCoreProfileCheck: true,
-              skipPostChoiceCheck: true,
-              skipAcceptanceCheck: true,
-            },
-          );
-        }
+        await continueQuestionnaireStep(ctx, app.config, from.id);
       });
       return;
     }
@@ -242,18 +226,7 @@ export function registerHandlers(bot: Bot, app: AppContext) {
           levelIndex,
         );
         if (result === 'complete') {
-          await handleChat(
-            ctx,
-            app,
-            toolContext(from.id),
-            WELCOME_AFTER_LANGUAGE,
-            {
-              skipLanguageCheck: true,
-              skipGenderCheck: true,
-              skipPostChoiceCheck: true,
-              skipAcceptanceCheck: true,
-            },
-          );
+          await continueQuestionnaireStep(ctx, app.config, from.id);
         }
       });
       return;
@@ -572,7 +545,7 @@ async function handleChat(
     skipLanguageCheck?: boolean;
     skipGenderCheck?: boolean;
     skipCoreProfileCheck?: boolean;
-    skipPostChoiceCheck?: boolean;
+    skipQuestionnaireCheck?: boolean;
     skipAcceptanceCheck?: boolean;
   },
 ) {
@@ -622,15 +595,6 @@ async function handleChat(
     if (coreState === 'prompted' || coreState === 'just_set') return;
   }
 
-  if (!options?.skipPostChoiceCheck) {
-    const choiceState = await ensurePostChoiceOrPrompt(ctx, app.config, userText);
-    if (choiceState === 'just_set') {
-      const step = await continueQuestionnaireStep(ctx, app.config, from.id);
-      if (step === 'picker_sent') return;
-      userText = WELCOME_AFTER_LANGUAGE;
-    }
-  }
-
   if (!options?.skipAcceptanceCheck && from && hasAcceptanceInProgress(from.id)) {
     const accState = await ensureAcceptanceOrPrompt(ctx, app.config, userText);
     if (accState === 'prompted') return;
@@ -639,16 +603,15 @@ async function handleChat(
     }
   }
 
+  if (!options?.skipQuestionnaireCheck) {
+    const qState = await ensureQuestionnaireContinuation(ctx, app.config, from.id, userText);
+    if (qState === 'handled' || qState === 'waiting') return;
+  }
+
   const stageBeforeAi = await resolveUserStage(app.config, from.id);
-  if (
-    (stageBeforeAi === 'profile_complete' || stageBeforeAi === 'post_ready') &&
-    !options?.skipPostChoiceCheck
-  ) {
-    const nextQ = await getNextMissingQuestionnaireField(app.config, from.id);
-    if (nextQ?.options?.length) {
-      await sendFollowUpPickers(ctx, app.config, from.id);
-      return;
-    }
+  if (stageBeforeAi === 'profile_complete') {
+    const postIncomplete = await checkPostResponsesComplete(app.config, from.id);
+    if (!postIncomplete.complete) return;
   }
 
   logInfo('message', 'Incoming user message', {
@@ -809,7 +772,11 @@ async function handleChat(
   });
 
   if (agentFunction === 'sb-main') {
-    await sendFollowUpPickers(ctx, app.config, from.id);
+    const stageAfter = await resolveUserStage(app.config, from.id);
+    const postAfter = await checkPostResponsesComplete(app.config, from.id);
+    if (!(stageAfter === 'profile_complete' && !postAfter.complete)) {
+      await sendFollowUpPickers(ctx, app.config, from.id);
+    }
     await sendUsernameReminderIfNeeded(ctx, app.config, from.id);
   }
 }

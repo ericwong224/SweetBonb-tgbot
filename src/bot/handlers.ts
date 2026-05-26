@@ -8,11 +8,14 @@ import { formatAdminErrorAlert, notifyAdminThrottled } from './admin-notify.js';
 import {
   applyFieldChoice,
   applyGenderChoice,
+  beginQuestionnaire,
+  continueQuestionnaireStep,
   ensureGenderOrPrompt,
   ensurePostChoiceOrPrompt,
   matchReplyKeyboard,
   sendFollowUpPickers,
 } from './choice-flow.js';
+import { getNextMissingQuestionnaireField } from './questionnaire-order.js';
 import {
   applyAcceptanceChoice,
   ensureAcceptanceOrPrompt,
@@ -179,15 +182,6 @@ export function registerHandlers(bot: Bot, app: AppContext) {
         await syncUser(ctx, app.config);
         await applyGenderChoice(ctx, app.config, from.id, value);
         await continueAfterCoreFieldSaved(ctx, app.config, from.id);
-        if (isCoreProfileComplete(await getProfile(app.config, from.id))) {
-          await handleChat(
-            ctx,
-            app,
-            toolContext(from.id),
-            WELCOME_AFTER_LANGUAGE,
-            { skipLanguageCheck: true, skipGenderCheck: true, skipCoreProfileCheck: true },
-          );
-        }
       });
       return;
     }
@@ -207,18 +201,22 @@ export function registerHandlers(bot: Bot, app: AppContext) {
         await syncUser(ctx, app.config);
         const ok = await applyFieldChoice(ctx, app.config, from.id, fieldKey, index);
         if (!ok) return;
-        await handleChat(
-          ctx,
-          app,
-          toolContext(from.id),
-          WELCOME_AFTER_LANGUAGE,
-          {
-            skipLanguageCheck: true,
-            skipGenderCheck: true,
-            skipPostChoiceCheck: true,
-            skipAcceptanceCheck: true,
-          },
-        );
+        const step = await continueQuestionnaireStep(ctx, app.config, from.id);
+        if (step === 'ai_next') {
+          await handleChat(
+            ctx,
+            app,
+            toolContext(from.id),
+            WELCOME_AFTER_LANGUAGE,
+            {
+              skipLanguageCheck: true,
+              skipGenderCheck: true,
+              skipCoreProfileCheck: true,
+              skipPostChoiceCheck: true,
+              skipAcceptanceCheck: true,
+            },
+          );
+        }
       });
       return;
     }
@@ -617,12 +615,18 @@ async function handleChat(
       );
     }
     const coreState = await ensureCoreProfileContinuation(ctx, app.config, userText);
+    if (coreState === 'questionnaire_start') {
+      await beginQuestionnaire(ctx, app.config, from.id);
+      return;
+    }
     if (coreState === 'prompted' || coreState === 'just_set') return;
   }
 
   if (!options?.skipPostChoiceCheck) {
     const choiceState = await ensurePostChoiceOrPrompt(ctx, app.config, userText);
     if (choiceState === 'just_set') {
+      const step = await continueQuestionnaireStep(ctx, app.config, from.id);
+      if (step === 'picker_sent') return;
       userText = WELCOME_AFTER_LANGUAGE;
     }
   }
@@ -632,6 +636,18 @@ async function handleChat(
     if (accState === 'prompted') return;
     if (accState === 'just_set') {
       userText = WELCOME_AFTER_LANGUAGE;
+    }
+  }
+
+  const stageBeforeAi = await resolveUserStage(app.config, from.id);
+  if (
+    (stageBeforeAi === 'profile_complete' || stageBeforeAi === 'post_ready') &&
+    !options?.skipPostChoiceCheck
+  ) {
+    const nextQ = await getNextMissingQuestionnaireField(app.config, from.id);
+    if (nextQ?.options?.length) {
+      await sendFollowUpPickers(ctx, app.config, from.id);
+      return;
     }
   }
 

@@ -111,26 +111,15 @@ export async function tryApplyCoreFieldFromText(
   await updateProfileField(config, userId, 'location', location);
   logInfo('profile', 'Location saved from text', { userId, location });
   await ctx.reply(`已記錄現居地：${location}`);
-
-  if (needsUsernameReminder(await getProfile(config, userId))) {
-    await sendUsernameReminderIfNeeded(ctx, config, userId, { force: true });
-  } else {
-    const en = lang === 'en';
-    await ctx.reply(
-      en
-        ? 'Basic profile complete! Let me guide you through the questionnaire～'
-        : '基本資料搞掂！而家開始填啟示問卷～',
-    );
-  }
   return true;
 }
 
-/** Bot-driven basic profile: gender/dob/location before AI takes over. */
+/** Bot-driven basic profile: gender/dob/location before questionnaire. */
 export async function ensureCoreProfileContinuation(
   ctx: Context,
   config: AppConfig,
   userText: string,
-): Promise<'ready' | 'prompted' | 'just_set'> {
+): Promise<'ready' | 'prompted' | 'just_set' | 'questionnaire_start'> {
   const from = ctx.from;
   if (!from) return 'ready';
 
@@ -142,7 +131,8 @@ export async function ensureCoreProfileContinuation(
 
   if (!skipParse && (await tryApplyCoreFieldFromText(ctx, config, from.id, userText))) {
     const updated = await getProfile(config, from.id);
-    return isCoreProfileComplete(updated) ? 'ready' : 'just_set';
+    if (isCoreProfileComplete(updated)) return 'questionnaire_start';
+    return 'just_set';
   }
 
   const prompted = await promptNextCoreProfileField(ctx, config, from.id);
@@ -181,14 +171,6 @@ export async function continueAfterCoreFieldSaved(
     await promptNextCoreProfileField(ctx, config, userId);
     return;
   }
-  if (needsUsernameReminder(profile)) {
-    await sendUsernameReminderIfNeeded(ctx, config, userId, { force: true });
-  }
-  const lang = profile?.preferred_language ?? null;
-  const en = lang === 'en';
-  await ctx.reply(
-    en
-      ? 'Basic profile complete! Let me guide you through the questionnaire～'
-      : '基本資料搞掂！而家開始填啟示問卷～',
-  );
+  const { beginQuestionnaire } = await import('./choice-flow.js');
+  await beginQuestionnaire(ctx, config, userId);
 }

@@ -9,6 +9,11 @@ import {
 } from '../db/post-fields.js';
 import { getProfile, updateProfileField } from '../db/profile.js';
 import { resolveUserStage } from '../flow/stages.js';
+import {
+  getNextMissingChoiceFieldOrdered,
+  getNextMissingQuestionnaireField,
+  QUESTIONNAIRE_FIELD_ORDER,
+} from './questionnaire-order.js';
 import { logInfo } from '../ops/runtime-log.js';
 import {
   GENDER_OPTIONS,
@@ -112,17 +117,7 @@ export async function getNextMissingChoiceField(
 ): Promise<{ field: PostFieldDef; options: string[] } | null> {
   const stage = await resolveUserStage(config, userId);
   if (stage === 'profile_incomplete' || stage === 'post_published') return null;
-
-  const defs = await getPostFieldDefs(config);
-  const { missing } = await checkPostResponsesComplete(config, userId);
-
-  for (const field of defs) {
-    if (!missing.includes(field.field_key)) continue;
-    if (!fieldHasChoiceOptions(field)) continue;
-    const options = getFieldOptions(field);
-    return { field, options };
-  }
-  return null;
+  return getNextMissingChoiceFieldOrdered(config, userId);
 }
 
 export async function tryApplyGenderFromText(
@@ -227,10 +222,13 @@ export async function tryApplyAnyMissingChoiceFromText(
   if (skipPrompt || !text.trim()) return false;
 
   const defs = await getPostFieldDefs(config);
+  const defMap = new Map(defs.map((d) => [d.field_key, d]));
   const { missing } = await checkPostResponsesComplete(config, userId);
 
-  for (const field of defs) {
-    if (!missing.includes(field.field_key) || !fieldHasChoiceOptions(field)) continue;
+  for (const key of QUESTIONNAIRE_FIELD_ORDER) {
+    if (!missing.includes(key)) continue;
+    const field = defMap.get(key);
+    if (!field || !fieldHasChoiceOptions(field)) continue;
     const options = getFieldOptions(field);
     const matched = matchChoiceFieldOption(field.field_key, options, text);
     if (!matched) continue;
@@ -267,12 +265,48 @@ export async function sendFollowUpPickers(
   const profile = await getProfile(config, userId);
   const lang = profile?.preferred_language ?? null;
 
-  const next = await getNextMissingChoiceField(config, userId);
-  if (next) {
-    await sendFieldChoicePicker(ctx, userId, next.field, next.options, lang);
+  const next = await getNextMissingQuestionnaireField(config, userId);
+  if (!next) {
+    const { ensureAcceptanceOrPrompt } = await import('./acceptance-flow.js');
+    await ensureAcceptanceOrPrompt(ctx, config, '', { forcePrompt: true });
     return;
   }
+  if (next.options?.length) {
+    await sendFieldChoicePicker(ctx, userId, next.field, next.options, lang);
+  }
+}
 
-  const { ensureAcceptanceOrPrompt } = await import('./acceptance-flow.js');
-  await ensureAcceptanceOrPrompt(ctx, config, '', { forcePrompt: true });
+/** After a choice button: send exactly one next step (button or hand off to AI for text). */
+export async function continueQuestionnaireStep(
+  ctx: Context,
+  config: AppConfig,
+  userId: number,
+): Promise<'picker_sent' | 'ai_next'> {
+  const next = await getNextMissingQuestionnaireField(config, userId);
+  if (!next) {
+    await sendFollowUpPickers(ctx, config, userId);
+    return 'picker_sent';
+  }
+  if (next.options?.length) {
+    const profile = await getProfile(config, userId);
+    await sendFieldChoicePicker(ctx, userId, next.field, next.options, profile?.preferred_language ?? null);
+    return 'picker_sent';
+  }
+  return 'ai_next';
+}
+
+export async function beginQuestionnaire(
+  ctx: Context,
+  config: AppConfig,
+  userId: number,
+): Promise<void> {
+  const profile = await getProfile(config, userId);
+  const lang = profile?.preferred_language ?? null;
+  const en = lang === 'en';
+  await ctx.reply(
+    en ? 'Basic profile done! One question at a time～' : '基本資料搞掂！我會逐題問你～',
+  );
+  const { sendUsernameReminderIfNeeded } = await import('./profile-flow.js');
+  await sendUsernameReminderIfNeeded(ctx, config, userId, { force: true });
+  await sendFollowUpPickers(ctx, config, userId);
 }

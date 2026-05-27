@@ -6,7 +6,13 @@ import {
   getPostResponseMap,
   savePostResponse,
 } from '../db/post-fields.js';
-import { matchChoiceFieldOption, getFieldOptions } from '../bot/field-choices.js';
+import {
+  filterTargetRelationshipOptions,
+  isTargetRelationshipChoiceAllowed,
+  matchChoiceFieldOption,
+  getFieldOptions,
+  TARGET_RELATIONSHIP_LONG_TERM,
+} from '../bot/field-choices.js';
 import {
   getProfile,
   isCoreProfileComplete,
@@ -189,26 +195,45 @@ async function savePostData(ctx: ToolContext, args: Record<string, unknown>) {
   let content = String(args.content).trim();
   if (!content) return gateError('content cannot be empty');
 
+  const postData = await getPostResponseMap(ctx.config, userId);
   const defs = await getPostFieldDefs(ctx.config);
   const def = defs.find((d) => d.field_key === item);
-  const options = def ? getFieldOptions(def) : [];
+  let options = def ? getFieldOptions(def) : [];
+  if (item === 'target_relationship') {
+    options = filterTargetRelationshipOptions(options, postData.member_relationship_status);
+  }
   if (options.length) {
     const matched = matchChoiceFieldOption(item, options, content);
     if (!matched) {
       const hint =
         item === 'target_age'
           ? '格式如 18-20（範圍）或 20+（即 20 歲或以上）'
-          : `必須從以下選項選擇：${options.join('、')}`;
+          : item === 'target_relationship'
+            ? '必須從以下選項選擇（「情侶-長遠發展」只限單身）：' + options.join('、')
+            : `必須從以下選項選擇：${options.join('、')}`;
       return gateError(`「${def?.label_zh ?? item}」${hint}`);
+    }
+    if (
+      item === 'target_relationship' &&
+      !isTargetRelationshipChoiceAllowed(postData.member_relationship_status, matched)
+    ) {
+      return gateError('「情侶-長遠發展」只限感情狀況為單身的用戶選擇');
     }
     content = matched;
   }
 
   await savePostResponse(ctx.config, userId, item, content);
+  if (
+    item === 'member_relationship_status' &&
+    content !== '單身' &&
+    postData.target_relationship === TARGET_RELATIONSHIP_LONG_TERM
+  ) {
+    await savePostResponse(ctx.config, userId, 'target_relationship', '');
+  }
   await resetUserPostDraft(ctx.config, userId);
 
   const profile = await getProfile(ctx.config, userId);
-  const postData = await getPostResponseMap(ctx.config, userId);
+  const postDataAfter = await getPostResponseMap(ctx.config, userId);
 
   if (isCoreProfileComplete(profile) && profile?.dob && profile.gender && profile.location) {
     const age = calcAge(new Date(profile.dob));
@@ -216,11 +241,11 @@ async function savePostData(ctx: ToolContext, args: Record<string, unknown>) {
       profile.location,
       profile.gender,
       age,
-      postData.member_relationship_status ?? '單身',
-      postData.member_height ?? '',
-      postData.member_weight ?? '',
-      postData,
-      postData.secure_pairing_options ?? '',
+      postDataAfter.member_relationship_status ?? '單身',
+      postDataAfter.member_height ?? '',
+      postDataAfter.member_weight ?? '',
+      postDataAfter,
+      postDataAfter.secure_pairing_options ?? '',
     );
     await updateUserPostBody(ctx.config, userId, format);
   }

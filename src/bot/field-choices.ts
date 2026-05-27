@@ -23,6 +23,26 @@ export const DEFAULT_FIELD_OPTIONS: Record<string, string[]> = {
   ],
 };
 
+/** 「情侶-長遠發展」只限本人感情狀況為單身時可選。 */
+export const TARGET_RELATIONSHIP_LONG_TERM = '情侶-長遠發展';
+export const MEMBER_STATUS_SINGLE = '單身';
+
+export function filterTargetRelationshipOptions(
+  options: string[],
+  memberRelationshipStatus: string | null | undefined,
+): string[] {
+  if (memberRelationshipStatus?.trim() === MEMBER_STATUS_SINGLE) return [...options];
+  return options.filter((o) => o !== TARGET_RELATIONSHIP_LONG_TERM);
+}
+
+export function isTargetRelationshipChoiceAllowed(
+  memberRelationshipStatus: string | null | undefined,
+  choice: string,
+): boolean {
+  if (choice !== TARGET_RELATIONSHIP_LONG_TERM) return true;
+  return memberRelationshipStatus?.trim() === MEMBER_STATUS_SINGLE;
+}
+
 export const GENDER_OPTIONS = [
   { label: '男', value: 'M' as const },
   { label: '女', value: 'F' as const },
@@ -110,6 +130,19 @@ export function getFieldOptions(field: {
   const fromDb = parseOptionsJson(field.options_json);
   if (fromDb.length) return fromDb;
   return DEFAULT_FIELD_OPTIONS[field.field_key] ?? [];
+}
+
+/** Per-user options (e.g. target_relationship gated on member_relationship_status). */
+export async function getFieldOptionsForUser(
+  config: import('../config.js').AppConfig,
+  userId: number,
+  field: { field_key: string; options_json?: unknown },
+): Promise<string[]> {
+  const base = getFieldOptions(field);
+  if (field.field_key !== 'target_relationship') return base;
+  const { getPostResponseMap } = await import('../db/post-fields.js');
+  const data = await getPostResponseMap(config, userId);
+  return filterTargetRelationshipOptions(base, data.member_relationship_status);
 }
 
 /** A field is a choice when options_json (or fallback) has options. */

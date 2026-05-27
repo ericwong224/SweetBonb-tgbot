@@ -17,11 +17,14 @@ import { logInfo } from '../ops/runtime-log.js';
 import {
   GENDER_OPTIONS,
   genderLabel,
-  getFieldOptions,
+  getFieldOptionsForUser,
   fieldHasChoiceOptions,
+  isTargetRelationshipChoiceAllowed,
   matchChoiceFieldOption,
   parseGenderInput,
+  TARGET_RELATIONSHIP_LONG_TERM,
 } from './field-choices.js';
+import { getPostResponseMap } from '../db/post-fields.js';
 import { deleteMessageSafe } from './language-flow.js';
 import { WELCOME_AFTER_LANGUAGE } from './commands.js';
 import {
@@ -247,11 +250,28 @@ export async function applyFieldChoice(
 
   const defs = await getPostFieldDefs(config);
   const field = defs.find((d) => d.field_key === fieldKey);
+  const postData = await getPostResponseMap(config, userId);
+
+  if (
+    fieldKey === 'target_relationship' &&
+    !isTargetRelationshipChoiceAllowed(postData.member_relationship_status, value)
+  ) {
+    await ctx.answerCallbackQuery({ text: '「情侶-長遠發展」只限單身用戶' });
+    return null;
+  }
 
   await savePostResponse(config, userId, fieldKey, value);
   clearQuestionPrompt(userId, fieldKey);
   await resolveUserStage(config, userId);
   logInfo('post', 'Choice field set from button', { userId, field: fieldKey, value });
+
+  if (
+    fieldKey === 'member_relationship_status' &&
+    value !== '單身' &&
+    postData.target_relationship === TARGET_RELATIONSHIP_LONG_TERM
+  ) {
+    await savePostResponse(config, userId, 'target_relationship', '');
+  }
 
   const callbackMessage = ctx.callbackQuery?.message;
   if (callbackMessage) {
@@ -313,9 +333,19 @@ export async function tryApplyAnyMissingChoiceFromText(
 
   for (const field of defs) {
     if (!missingSet.has(field.field_key) || !fieldHasChoiceOptions(field)) continue;
-    const options = getFieldOptions(field);
+    const options = await getFieldOptionsForUser(config, userId, field);
     const matched = matchChoiceFieldOption(field.field_key, options, text);
     if (!matched) continue;
+
+    if (
+      field.field_key === 'target_relationship' &&
+      matched === TARGET_RELATIONSHIP_LONG_TERM
+    ) {
+      const data = await getPostResponseMap(config, userId);
+      if (!isTargetRelationshipChoiceAllowed(data.member_relationship_status, matched)) {
+        continue;
+      }
+    }
 
     await savePostResponse(config, userId, field.field_key, matched);
     clearQuestionPrompt(userId, field.field_key);

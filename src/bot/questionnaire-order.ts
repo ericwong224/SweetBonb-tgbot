@@ -1,6 +1,6 @@
 import type { AppConfig } from '../config.js';
 import { checkPostResponsesComplete, getPostFieldDefs, type PostFieldDef } from '../db/post-fields.js';
-import { fieldHasChoiceOptions, getFieldOptions } from './field-choices.js';
+import { fieldHasChoiceOptions, getFieldOptionsForUser } from './field-choices.js';
 
 /** Next missing required field in `tg_post_field_def.sort_order` (see getPostFieldDefs). */
 export async function getNextMissingQuestionnaireField(
@@ -13,7 +13,9 @@ export async function getNextMissingQuestionnaireField(
 
   for (const field of defs) {
     if (!missingSet.has(field.field_key)) continue;
-    const options = fieldHasChoiceOptions(field) ? getFieldOptions(field) : null;
+    const options = fieldHasChoiceOptions(field)
+      ? await getFieldOptionsForUser(config, userId, field)
+      : null;
     return { field, options };
   }
   return null;

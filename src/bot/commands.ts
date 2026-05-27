@@ -105,3 +105,7 @@ export async function registerBotCommands(api: {
 }
 
 export const WELCOME_AFTER_LANGUAGE = '你好，我剛開始使用 SweetBonb。';
+
+/** Synthetic user message to hand off to AI after questionnaire is complete. */
+export const QUESTIONNAIRE_COMPLETE_PROMPT =
+  '問卷已全部填好，請幫我預覽同整理啟示，準備好就話我知點發佈。';

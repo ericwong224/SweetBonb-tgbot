@@ -60,6 +60,7 @@ import {
   handleStatusCommand,
   sendLanguagePicker,
   WELCOME_AFTER_LANGUAGE,
+  QUESTIONNAIRE_COMPLETE_PROMPT,
 } from './commands.js';
 import { userMessageLock } from './user-lock.js';
 import {
@@ -84,6 +85,35 @@ function questionnaireLog(app: AppContext, userId: number): QuestionnaireLogCont
     userId,
     stageKey: 'profile_complete',
   };
+}
+
+async function handoffAfterQuestionnaireComplete(
+  ctx: Context,
+  app: AppContext,
+  userId: number,
+): Promise<void> {
+  const postCheck = await checkPostResponsesComplete(app.config, userId);
+  if (!postCheck.complete) return;
+
+  await handleChat(
+    ctx,
+    app,
+    {
+      config: app.config,
+      api: ctx.api,
+      userId,
+      botUsername: app.botInfo.bot_username,
+      userStage: 'post_ready',
+    },
+    QUESTIONNAIRE_COMPLETE_PROMPT,
+    {
+      skipLanguageCheck: true,
+      skipGenderCheck: true,
+      skipCoreProfileCheck: true,
+      skipQuestionnaireCheck: true,
+      skipAcceptanceCheck: true,
+    },
+  );
 }
 
 export function registerHandlers(bot: Bot, app: AppContext) {
@@ -214,7 +244,13 @@ export function registerHandlers(bot: Bot, app: AppContext) {
         const saved = await applyFieldChoice(ctx, app.config, from.id, fieldKey, index);
         if (!saved) return;
         await logQuestionnaireUserAnswer(log, formatUserAnswerLog(saved));
-        await continueQuestionnaireStep(ctx, app.config, from.id, { previous: saved, log });
+        const stepResult = await continueQuestionnaireStep(ctx, app.config, from.id, {
+          previous: saved,
+          log,
+        });
+        if (stepResult === 'complete') {
+          await handoffAfterQuestionnaireComplete(ctx, app, from.id);
+        }
       });
       return;
     }
@@ -247,7 +283,13 @@ export function registerHandlers(bot: Bot, app: AppContext) {
             value: '完成',
           };
           await logQuestionnaireUserAnswer(log, formatUserAnswerLog(previous));
-          await continueQuestionnaireStep(ctx, app.config, from.id, { previous, log });
+          const stepResult = await continueQuestionnaireStep(ctx, app.config, from.id, {
+            previous,
+            log,
+          });
+          if (stepResult === 'complete') {
+            await handoffAfterQuestionnaireComplete(ctx, app, from.id);
+          }
         }
       });
       return;
@@ -640,6 +682,10 @@ async function handleChat(
       userText,
       { log: questionnaireLog(app, from.id) },
     );
+    if (qState === 'complete') {
+      await handoffAfterQuestionnaireComplete(ctx, app, from.id);
+      return;
+    }
     if (qState === 'handled' || qState === 'waiting') return;
   }
 

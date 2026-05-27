@@ -144,14 +144,19 @@ async function promptNextQuestionnaireField(
   config: AppConfig,
   userId: number,
   step?: QuestionnaireStepOptions,
-): Promise<boolean> {
+): Promise<'prompted' | 'complete' | 'idle'> {
   const profile = await getProfile(config, userId);
   const lang = profile?.preferred_language ?? null;
   const next = await getNextMissingQuestionnaireField(config, userId);
   if (!next) {
-    const { ensureAcceptanceOrPrompt } = await import('./acceptance-flow.js');
-    await ensureAcceptanceOrPrompt(ctx, config, '', { forcePrompt: true, previous: step?.previous, log: step?.log });
-    return true;
+    const { complete } = await checkPostResponsesComplete(config, userId);
+    if (complete) {
+      clearQuestionPrompt(userId);
+      await resolveUserStage(config, userId);
+      return 'complete';
+    }
+    logInfo('questionnaire', 'No next field but questionnaire incomplete', { userId });
+    return 'idle';
   }
 
   if (next.field.field_key === 'acceptance_questionnaire') {
@@ -161,10 +166,10 @@ async function promptNextQuestionnaireField(
       lang,
       log: step?.log,
     });
-    return true;
+    return 'prompted';
   }
 
-  if (wasQuestionPrompted(userId, next.field.field_key)) return false;
+  if (wasQuestionPrompted(userId, next.field.field_key)) return 'idle';
 
   let text = buildQuestionnairePrompt(next.field, lang, {
     previous: step?.includeIntro ? undefined : step?.previous,
@@ -190,7 +195,7 @@ async function promptNextQuestionnaireField(
   if (step?.log) {
     await logQuestionnaireBotPrompt(step.log, text);
   }
-  return true;
+  return 'prompted';
 }
 
 export async function getNextMissingChoiceField(
@@ -414,8 +419,8 @@ export async function continueQuestionnaireStep(
   config: AppConfig,
   userId: number,
   step?: QuestionnaireStepOptions,
-): Promise<void> {
-  await promptNextQuestionnaireField(ctx, config, userId, step);
+): Promise<'prompted' | 'complete' | 'idle'> {
+  return promptNextQuestionnaireField(ctx, config, userId, step);
 }
 
 function isSyntheticUserText(text: string): boolean {
@@ -429,7 +434,7 @@ export async function ensureQuestionnaireContinuation(
   userId: number,
   userText: string,
   step?: Pick<QuestionnaireStepOptions, 'log'>,
-): Promise<'ready' | 'handled' | 'waiting'> {
+): Promise<'ready' | 'handled' | 'waiting' | 'complete'> {
   const { hasAcceptanceInProgress } = await import('./acceptance-flow.js');
   if (hasAcceptanceInProgress(userId)) return 'ready';
 
@@ -445,16 +450,22 @@ export async function ensureQuestionnaireContinuation(
       if (step?.log) {
         await logQuestionnaireUserAnswer(step.log, formatUserAnswerLog(savedChoice));
       }
-      await continueQuestionnaireStep(ctx, config, userId, { previous: savedChoice, log: step?.log });
-      return 'handled';
+      const result = await continueQuestionnaireStep(ctx, config, userId, {
+        previous: savedChoice,
+        log: step?.log,
+      });
+      return result === 'complete' ? 'complete' : 'handled';
     }
     const savedText = await tryApplyTextFieldFromText(ctx, config, userId, userText);
     if (savedText) {
       if (step?.log) {
         await logQuestionnaireUserAnswer(step.log, formatUserAnswerLog(savedText));
       }
-      await continueQuestionnaireStep(ctx, config, userId, { previous: savedText, log: step?.log });
-      return 'handled';
+      const result = await continueQuestionnaireStep(ctx, config, userId, {
+        previous: savedText,
+        log: step?.log,
+      });
+      return result === 'complete' ? 'complete' : 'handled';
     }
   }
 

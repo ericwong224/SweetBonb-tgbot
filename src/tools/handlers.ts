@@ -24,7 +24,11 @@ import {
 import {
   buildChannelMessageLink,
   checkPublishChannelMembership,
+  formatChannelForTool,
+  getChannelById,
+  getMainChannel,
   isUserChannelMember,
+  listRegionalPostChannels,
   normalizeTelegramChatId,
 } from '../db/channels.js';
 import {
@@ -283,20 +287,25 @@ async function post2publish(ctx: ToolContext, args: Record<string, unknown>) {
   const profile = await getProfile(ctx.config, userId);
   if (!profile?.location) return gateError('缺少現居地，無法選擇頻道');
 
-  const channelCheck = await checkPublishChannelMembership(
-    ctx.api,
-    ctx.config,
-    userId,
-    profile.location,
-  );
+  const regionalChannelIdArg = Number(args.regional_channel_id);
+  if (!Number.isFinite(regionalChannelIdArg)) {
+    return gateError(
+      '請先呼叫 channel_info，依用戶現居地判斷地區頻道，並在 post2publish 傳入 regional_channel_id',
+    );
+  }
+
+  const regionalChannel = await getChannelById(ctx.config, regionalChannelIdArg);
+  if (!regionalChannel || regionalChannel.for_post !== 1) {
+    return gateError('地區頻道 ID 無效，請從 channel_info 的 regional_channels 選擇');
+  }
+
+  const channelCheck = await checkPublishChannelMembership(ctx.api, ctx.config, userId, {
+    regionalChannel,
+    regionalLabel: profile.location,
+  });
 
   if (!channelCheck.mainChannel) {
     return gateError('找不到總頻設定，請聯絡管理員');
-  }
-  if (!channelCheck.regionalChannel) {
-    return gateError(
-      `找不到 ${profile.location} 對應的地區發佈頻道（請確認現居地格式，例如：香港-九龍）`,
-    );
   }
 
   if (channelCheck.checkErrors.length > 0) {
@@ -309,11 +318,16 @@ async function post2publish(ctx: ToolContext, args: Record<string, unknown>) {
   }
 
   if (!channelCheck.ok) {
-    const names = channelCheck.missing.map((m) => `${m.label}（${m.display}）`).join('、');
+    const names = channelCheck.missing
+      .map((m) => {
+        const statusHint = m.status ? `，Telegram 狀態：${m.status}` : '';
+        return `${m.label}（${m.display}）${statusHint}`;
+      })
+      .join('、');
     return gateError(`發佈前請先加入以下頻道：${names}`);
   }
 
-  const regionalChannelId = normalizeTelegramChatId(channelCheck.regionalChannel.channel_id);
+  const regionalChannelId = normalizeTelegramChatId(regionalChannel.channel_id);
   const mainChannelId = normalizeTelegramChatId(channelCheck.mainChannel.channel_id);
 
   const userPost = await getUserPost(ctx.config, userId);
@@ -333,9 +347,9 @@ async function post2publish(ctx: ToolContext, args: Record<string, unknown>) {
 
   const regionalSent = await ctx.api.sendMessage(regionalChannelId, detailedText);
   const detailLink = buildChannelMessageLink(
-    Number(channelCheck.regionalChannel.channel_id),
+    Number(regionalChannel.channel_id),
     regionalSent.message_id,
-    channelCheck.regionalChannel.channel_username,
+    regionalChannel.channel_username,
   );
 
   const mainKeyboard = new InlineKeyboard().url('查看詳細啟示', detailLink);
@@ -346,7 +360,7 @@ async function post2publish(ctx: ToolContext, args: Record<string, unknown>) {
   await markUserPostPublished(
     ctx.config,
     userId,
-    Number(channelCheck.regionalChannel.channel_id),
+    Number(regionalChannel.channel_id),
     regionalSent.message_id,
     Number(channelCheck.mainChannel.channel_id),
     mainSent.message_id,
@@ -365,7 +379,16 @@ async function post2publish(ctx: ToolContext, args: Record<string, unknown>) {
 }
 
 async function channelInfo(ctx: ToolContext) {
-  return getChannelInfo(ctx.config);
+  const mainChannel = await getMainChannel(ctx.config);
+  const regionalChannels = await listRegionalPostChannels(ctx.config);
+  const all = await getChannelInfo(ctx.config);
+
+  return {
+    main_channel: mainChannel ? formatChannelForTool(mainChannel) : null,
+    regional_channels: regionalChannels.map(formatChannelForTool),
+    all_channels: all,
+    hint: '依用戶現居地從 regional_channels 選擇最合適的 channel_id，再傳入 post2publish.regional_channel_id',
+  };
 }
 
 async function checkMember(ctx: ToolContext, args: Record<string, unknown>) {
@@ -378,6 +401,7 @@ async function checkMember(ctx: ToolContext, args: Record<string, unknown>) {
     user_id: userId,
     joined: result.joined,
     status: result.status ?? null,
+    is_member: result.is_member ?? null,
     error: result.error ?? null,
   };
 }

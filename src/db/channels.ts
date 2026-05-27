@@ -12,7 +12,31 @@ export interface ChannelRow extends RowDataPacket {
   area: string | null;
 }
 
-const NOT_JOINED_STATUSES = new Set(['left', 'kicked', 'banned']);
+type ChatMemberLike = {
+  status: string;
+  is_member?: boolean;
+};
+
+/** Telegram ChatMember: several statuses still mean the user is in the chat. */
+export function isTelegramChatMember(member: ChatMemberLike): boolean {
+  switch (member.status) {
+    case 'creator':
+    case 'administrator':
+    case 'member':
+      return true;
+    case 'restricted':
+    case 'banned':
+      return member.is_member === true;
+    case 'left':
+    case 'kicked':
+      return false;
+    default:
+      if ('is_member' in member && typeof member.is_member === 'boolean') {
+        return member.is_member;
+      }
+      return false;
+  }
+}
 
 export function channelDisplayName(channel: ChannelRow): string {
   if (channel.channel_username?.trim()) {
@@ -34,7 +58,6 @@ export function normalizeTelegramChatId(channelId: number | bigint | string): nu
   }
 
   if (/^\d+$/.test(raw)) {
-    // Some legacy rows store the supergroup id without the -100 prefix.
     if (raw.length >= 9 && raw.length <= 12 && !raw.startsWith('100')) {
       return `-100${raw}`;
     }
@@ -59,6 +82,25 @@ export function buildChannelMessageLink(
   return `https://t.me/c/${internal}/${messageId}`;
 }
 
+export async function getChannelById(
+  config: AppConfig,
+  channelId: number,
+): Promise<ChannelRow | null> {
+  const rows = await query<ChannelRow[]>(
+    config,
+    'SELECT * FROM n8n_channel_info WHERE channel_id = ? LIMIT 1',
+    [channelId],
+  );
+  return rows[0] ?? null;
+}
+
+export async function listRegionalPostChannels(config: AppConfig): Promise<ChannelRow[]> {
+  return query<ChannelRow[]>(
+    config,
+    'SELECT * FROM n8n_channel_info WHERE for_post = 1 ORDER BY area, channel_id',
+  );
+}
+
 export async function getMainChannel(config: AppConfig): Promise<ChannelRow | null> {
   const rows = await query<ChannelRow[]>(
     config,
@@ -79,10 +121,7 @@ export async function getMainChannel(config: AppConfig): Promise<ChannelRow | nu
   return rows[0] ?? null;
 }
 
-/**
- * Match user location (e.g. 香港-九龍) to a regional post channel.
- * Bidirectional: channel.area contained in location OR location contained in channel.area.
- */
+/** @deprecated Prefer AI + regional_channel_id; kept for probes/fallback. */
 export async function getRegionalChannel(
   config: AppConfig,
   location: string,
@@ -94,10 +133,7 @@ export async function getRegionalChannel(
     config,
     `SELECT * FROM n8n_channel_info
      WHERE for_post = 1
-       AND (
-         area LIKE ?
-         OR ? LIKE CONCAT('%', area, '%')
-       )
+       AND (area LIKE ? OR ? LIKE CONCAT('%', area, '%'))
      ORDER BY LENGTH(area) DESC, channel_id
      LIMIT 1`,
     [`%${trimmed}%`, trimmed],
@@ -108,6 +144,7 @@ export async function getRegionalChannel(
 export interface ChannelMemberCheck {
   joined: boolean;
   status?: string;
+  is_member?: boolean;
   error?: string;
 }
 
@@ -119,8 +156,12 @@ export async function isUserChannelMember(
   try {
     const chatId = normalizeTelegramChatId(channelId);
     const member = await api.getChatMember(chatId, userId);
-    const joined = !NOT_JOINED_STATUSES.has(member.status);
-    return { joined, status: member.status };
+    const joined = isTelegramChatMember(member);
+    const isMemberFlag =
+      'is_member' in member && typeof member.is_member === 'boolean'
+        ? member.is_member
+        : undefined;
+    return { joined, status: member.status, is_member: isMemberFlag };
   } catch (error) {
     const message = error instanceof Error ? error.message : 'check failed';
     return { joined: false, error: message };
@@ -138,6 +179,7 @@ export interface PublishChannelCheck {
     channel_username: string | null;
     display: string;
     status?: string;
+    is_member?: boolean;
   }>;
   checkErrors: Array<{
     label: string;
@@ -151,10 +193,14 @@ export async function checkPublishChannelMembership(
   api: Api,
   config: AppConfig,
   userId: number,
-  location: string,
+  options: {
+    regionalChannel: ChannelRow;
+    regionalLabel?: string;
+  },
 ): Promise<PublishChannelCheck> {
   const mainChannel = await getMainChannel(config);
-  const regionalChannel = await getRegionalChannel(config, location);
+  const regionalChannel = options.regionalChannel;
+  const regionalLabel = options.regionalLabel?.trim() || regionalChannel.area || '地區頻道';
 
   const missing: PublishChannelCheck['missing'] = [];
   const checkErrors: PublishChannelCheck['checkErrors'] = [];
@@ -162,13 +208,10 @@ export async function checkPublishChannelMembership(
   if (!mainChannel) {
     return { ok: false, mainChannel: null, regionalChannel, missing, checkErrors };
   }
-  if (!regionalChannel) {
-    return { ok: false, mainChannel, regionalChannel: null, missing, checkErrors };
-  }
 
   const checks: Array<{ label: string; channel: ChannelRow }> = [
     { label: '總頻', channel: mainChannel },
-    { label: location, channel: regionalChannel },
+    { label: regionalLabel, channel: regionalChannel },
   ];
 
   for (const { label, channel } of checks) {
@@ -190,6 +233,7 @@ export async function checkPublishChannelMembership(
         channel_username: channel.channel_username,
         display: channelDisplayName(channel),
         status: result.status,
+        is_member: result.is_member,
       });
     }
   }
@@ -200,5 +244,17 @@ export async function checkPublishChannelMembership(
     regionalChannel,
     missing,
     checkErrors,
+  };
+}
+
+export function formatChannelForTool(channel: ChannelRow) {
+  return {
+    channel_id: Number(channel.channel_id),
+    channel_name: channel.channel_name,
+    channel_username: channel.channel_username,
+    channel_mode: channel.channel_mode,
+    for_post: channel.for_post,
+    area: channel.area,
+    display: channelDisplayName(channel),
   };
 }

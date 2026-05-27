@@ -94,13 +94,17 @@ export const TOOL_DEFINITIONS: OpenAI.Chat.Completions.ChatCompletionTool[] = [
     function: {
       name: 'post2publish',
       description:
-        'Publish user revelation: detailed post to regional channel, short post to main channel. Requires membership in both channels.',
+        'Publish user revelation: detailed post to regional channel, short post to main channel. Call channel_info first to pick regional_channel_id from user location.',
       parameters: {
         type: 'object',
         properties: {
           user_id: { type: 'integer' },
+          regional_channel_id: {
+            type: 'integer',
+            description: 'Regional channel id from channel_info.regional_channels (AI picks by user location)',
+          },
         },
-        required: ['user_id'],
+        required: ['user_id', 'regional_channel_id'],
       },
     },
   },
@@ -108,7 +112,8 @@ export const TOOL_DEFINITIONS: OpenAI.Chat.Completions.ChatCompletionTool[] = [
     type: 'function',
     function: {
       name: 'channel_info',
-      description: 'List supported Telegram channels and areas',
+      description:
+        'List main channel and regional post channels (for AI to map user location to regional_channel_id)',
       parameters: { type: 'object', properties: {} },
     },
   },
@@ -116,7 +121,8 @@ export const TOOL_DEFINITIONS: OpenAI.Chat.Completions.ChatCompletionTool[] = [
     type: 'function',
     function: {
       name: 'check_member',
-      description: 'Check if a user has joined a Telegram channel',
+      description:
+        'Check if a user has joined a Telegram channel. joined=true for creator/administrator/member, or restricted/banned with is_member=true.',
       parameters: {
         type: 'object',
         properties: {

@@ -29,7 +29,7 @@ import {
   getMainChannel,
   isUserChannelMember,
   listRegionalPostChannels,
-  normalizeTelegramChatId,
+  resolveChannelChatRef,
 } from '../db/channels.js';
 import {
   buildPostFormatsFromProfile,
@@ -287,14 +287,14 @@ async function post2publish(ctx: ToolContext, args: Record<string, unknown>) {
   const profile = await getProfile(ctx.config, userId);
   if (!profile?.location) return gateError('缺少現居地，無法選擇頻道');
 
-  const regionalChannelIdArg = Number(args.regional_channel_id);
-  if (!Number.isFinite(regionalChannelIdArg)) {
+  const regionalIdRaw = args.regional_channel_id;
+  if (regionalIdRaw == null || regionalIdRaw === '') {
     return gateError(
       '請先呼叫 channel_info，依用戶現居地判斷地區頻道，並在 post2publish 傳入 regional_channel_id',
     );
   }
 
-  const regionalChannel = await getChannelById(ctx.config, regionalChannelIdArg);
+  const regionalChannel = await getChannelById(ctx.config, String(regionalIdRaw));
   if (!regionalChannel || regionalChannel.for_post !== 1) {
     return gateError('地區頻道 ID 無效，請從 channel_info 的 regional_channels 選擇');
   }
@@ -324,11 +324,13 @@ async function post2publish(ctx: ToolContext, args: Record<string, unknown>) {
         return `${m.label}（${m.display}）${statusHint}`;
       })
       .join('、');
-    return gateError(`發佈前請先加入以下頻道：${names}`);
+    return gateError(
+      `發佈前請先加入以下頻道：${names}。請確認加入的是列出的 @username 頻道本身（不是討論群）。`,
+    );
   }
 
-  const regionalChannelId = normalizeTelegramChatId(regionalChannel.channel_id);
-  const mainChannelId = normalizeTelegramChatId(channelCheck.mainChannel.channel_id);
+  const regionalChatRef = resolveChannelChatRef(regionalChannel);
+  const mainChatRef = resolveChannelChatRef(channelCheck.mainChannel);
 
   const userPost = await getUserPost(ctx.config, userId);
   let detailedBody = userPost?.body_format;
@@ -345,15 +347,15 @@ async function post2publish(ctx: ToolContext, args: Record<string, unknown>) {
   const footer = `\n\n👉 配對請按：https://t.me/${botUser}?start=match-target-${userId}`;
   const detailedText = detailedBody + footer;
 
-  const regionalSent = await ctx.api.sendMessage(regionalChannelId, detailedText);
+  const regionalSent = await ctx.api.sendMessage(regionalChatRef, detailedText);
   const detailLink = buildChannelMessageLink(
-    Number(regionalChannel.channel_id),
+    regionalChannel.channel_id,
     regionalSent.message_id,
     regionalChannel.channel_username,
   );
 
   const mainKeyboard = new InlineKeyboard().url('查看詳細啟示', detailLink);
-  const mainSent = await ctx.api.sendMessage(mainChannelId, shortBody, {
+  const mainSent = await ctx.api.sendMessage(mainChatRef, shortBody, {
     reply_markup: mainKeyboard,
   });
 
@@ -369,9 +371,9 @@ async function post2publish(ctx: ToolContext, args: Record<string, unknown>) {
 
   return {
     success: true,
-    regional_channel_id: regionalChannelId,
+    regional_channel_id: String(regionalChannel.channel_id),
     regional_message_id: regionalSent.message_id,
-    main_channel_id: mainChannelId,
+    main_channel_id: String(channelCheck.mainChannel.channel_id),
     main_message_id: mainSent.message_id,
     detail_link: detailLink,
     status: 'publish',
@@ -393,15 +395,20 @@ async function channelInfo(ctx: ToolContext) {
 
 async function checkMember(ctx: ToolContext, args: Record<string, unknown>) {
   const userId = Number(args.user_id);
-  const channelId = args.channel_id as number | string;
+  const channelId = String(args.channel_id ?? '').trim();
+  if (!channelId) {
+    return { error: 'channel_id required', user_id: userId };
+  }
 
-  const result = await isUserChannelMember(ctx.api, userId, channelId);
+  const channel = await getChannelById(ctx.config, channelId);
+  const result = await isUserChannelMember(ctx.api, userId, channel ?? channelId);
   return {
     channel_id: channelId,
     user_id: userId,
     joined: result.joined,
     status: result.status ?? null,
     is_member: result.is_member ?? null,
+    chat_ref: result.chat_ref ?? null,
     error: result.error ?? null,
   };
 }

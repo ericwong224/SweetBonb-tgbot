@@ -100,8 +100,9 @@ export const TOOL_DEFINITIONS: OpenAI.Chat.Completions.ChatCompletionTool[] = [
         properties: {
           user_id: { type: 'integer' },
           regional_channel_id: {
-            type: 'integer',
-            description: 'Regional channel id from channel_info.regional_channels (AI picks by user location)',
+            type: 'string',
+            description:
+              'Regional channel id from channel_info.regional_channels (string, AI picks by user location)',
           },
         },
         required: ['user_id', 'regional_channel_id'],
@@ -127,7 +128,10 @@ export const TOOL_DEFINITIONS: OpenAI.Chat.Completions.ChatCompletionTool[] = [
         type: 'object',
         properties: {
           user_id: { type: 'integer' },
-          channel_id: { type: 'integer' },
+          channel_id: {
+            type: 'string',
+            description: 'Channel id from channel_info (string)',
+          },
         },
         required: ['user_id', 'channel_id'],
       },

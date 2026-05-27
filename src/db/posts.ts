@@ -74,13 +74,10 @@ export async function getChannelInfo(config: AppConfig) {
   return rows;
 }
 
+import { getRegionalChannel } from './channels.js';
+
 export async function getChannelByArea(config: AppConfig, area: string) {
-  const rows = await query<RowDataPacket[]>(
-    config,
-    'SELECT * FROM n8n_channel_info WHERE area LIKE ? AND for_post = 1 LIMIT 1',
-    [`%${area}%`],
-  );
-  return rows[0] ?? null;
+  return getRegionalChannel(config, area);
 }
 
 export function buildPostFormat1(

@@ -24,6 +24,8 @@ import {
 import {
   buildChannelMessageLink,
   checkPublishChannelMembership,
+  isUserChannelMember,
+  normalizeTelegramChatId,
 } from '../db/channels.js';
 import {
   buildPostFormatsFromProfile,
@@ -292,7 +294,18 @@ async function post2publish(ctx: ToolContext, args: Record<string, unknown>) {
     return gateError('找不到總頻設定，請聯絡管理員');
   }
   if (!channelCheck.regionalChannel) {
-    return gateError(`找不到 ${profile.location} 對應的地區發佈頻道`);
+    return gateError(
+      `找不到 ${profile.location} 對應的地區發佈頻道（請確認現居地格式，例如：香港-九龍）`,
+    );
+  }
+
+  if (channelCheck.checkErrors.length > 0) {
+    const detail = channelCheck.checkErrors
+      .map((e) => `${e.label}（${e.display}）：${e.error}`)
+      .join('；');
+    return gateError(
+      `無法驗證頻道會籍：${detail}。請確認 bot 已加入並為該頻道管理員。`,
+    );
   }
 
   if (!channelCheck.ok) {
@@ -300,8 +313,8 @@ async function post2publish(ctx: ToolContext, args: Record<string, unknown>) {
     return gateError(`發佈前請先加入以下頻道：${names}`);
   }
 
-  const regionalChannelId = Number(channelCheck.regionalChannel.channel_id);
-  const mainChannelId = Number(channelCheck.mainChannel.channel_id);
+  const regionalChannelId = normalizeTelegramChatId(channelCheck.regionalChannel.channel_id);
+  const mainChannelId = normalizeTelegramChatId(channelCheck.mainChannel.channel_id);
 
   const userPost = await getUserPost(ctx.config, userId);
   let detailedBody = userPost?.body_format;
@@ -320,7 +333,7 @@ async function post2publish(ctx: ToolContext, args: Record<string, unknown>) {
 
   const regionalSent = await ctx.api.sendMessage(regionalChannelId, detailedText);
   const detailLink = buildChannelMessageLink(
-    regionalChannelId,
+    Number(channelCheck.regionalChannel.channel_id),
     regionalSent.message_id,
     channelCheck.regionalChannel.channel_username,
   );
@@ -333,9 +346,9 @@ async function post2publish(ctx: ToolContext, args: Record<string, unknown>) {
   await markUserPostPublished(
     ctx.config,
     userId,
-    regionalChannelId,
+    Number(channelCheck.regionalChannel.channel_id),
     regionalSent.message_id,
-    mainChannelId,
+    Number(channelCheck.mainChannel.channel_id),
     mainSent.message_id,
   );
   await resolveUserStage(ctx.config, userId);
@@ -357,20 +370,16 @@ async function channelInfo(ctx: ToolContext) {
 
 async function checkMember(ctx: ToolContext, args: Record<string, unknown>) {
   const userId = Number(args.user_id);
-  const channelId = Number(args.channel_id);
+  const channelId = args.channel_id as number | string;
 
-  try {
-    const member = await ctx.api.getChatMember(channelId, userId);
-    const joined = !['left', 'kicked', 'banned'].includes(member.status);
-    return { channel_id: channelId, user_id: userId, joined, status: member.status };
-  } catch (error) {
-    return {
-      channel_id: channelId,
-      user_id: userId,
-      joined: false,
-      error: error instanceof Error ? error.message : 'check failed',
-    };
-  }
+  const result = await isUserChannelMember(ctx.api, userId, channelId);
+  return {
+    channel_id: channelId,
+    user_id: userId,
+    joined: result.joined,
+    status: result.status ?? null,
+    error: result.error ?? null,
+  };
 }
 
 async function matchRequest(ctx: ToolContext, args: Record<string, unknown>) {

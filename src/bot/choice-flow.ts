@@ -12,7 +12,6 @@ import { resolveUserStage } from '../flow/stages.js';
 import {
   getNextMissingChoiceFieldOrdered,
   getNextMissingQuestionnaireField,
-  QUESTIONNAIRE_FIELD_ORDER,
 } from './questionnaire-order.js';
 import { logInfo } from '../ops/runtime-log.js';
 import {
@@ -309,13 +308,11 @@ export async function tryApplyAnyMissingChoiceFromText(
   if (skipPrompt || !text.trim()) return null;
 
   const defs = await getPostFieldDefs(config);
-  const defMap = new Map(defs.map((d) => [d.field_key, d]));
   const { missing } = await checkPostResponsesComplete(config, userId);
+  const missingSet = new Set(missing);
 
-  for (const key of QUESTIONNAIRE_FIELD_ORDER) {
-    if (!missing.includes(key)) continue;
-    const field = defMap.get(key);
-    if (!field || !fieldHasChoiceOptions(field)) continue;
+  for (const field of defs) {
+    if (!missingSet.has(field.field_key) || !fieldHasChoiceOptions(field)) continue;
     const options = getFieldOptions(field);
     const matched = matchChoiceFieldOption(field.field_key, options, text);
     if (!matched) continue;

@@ -2,36 +2,17 @@ import type { AppConfig } from '../config.js';
 import { checkPostResponsesComplete, getPostFieldDefs, type PostFieldDef } from '../db/post-fields.js';
 import { fieldHasChoiceOptions, getFieldOptions } from './field-choices.js';
 
-/** Business order — matches legacy N8N / AI prompt flow. */
-export const QUESTIONNAIRE_FIELD_ORDER = [
-  'target_gender',
-  'target_relationship',
-  'target_age',
-  'target_height',
-  'target_relationship_status',
-  'target_bodyshape',
-  'member_height',
-  'member_weight',
-  'member_relationship_status',
-  'member_sexual_experience',
-  'member_profile',
-  'acceptance_questionnaire',
-  'other_sexual_interests',
-  'secure_pairing_options',
-] as const;
-
+/** Next missing required field in `tg_post_field_def.sort_order` (see getPostFieldDefs). */
 export async function getNextMissingQuestionnaireField(
   config: AppConfig,
   userId: number,
 ): Promise<{ field: PostFieldDef; options: string[] | null } | null> {
   const defs = await getPostFieldDefs(config);
-  const defMap = new Map(defs.map((d) => [d.field_key, d]));
   const { missing } = await checkPostResponsesComplete(config, userId);
+  const missingSet = new Set(missing);
 
-  for (const key of QUESTIONNAIRE_FIELD_ORDER) {
-    if (!missing.includes(key)) continue;
-    const field = defMap.get(key);
-    if (!field) continue;
+  for (const field of defs) {
+    if (!missingSet.has(field.field_key)) continue;
     const options = fieldHasChoiceOptions(field) ? getFieldOptions(field) : null;
     return { field, options };
   }

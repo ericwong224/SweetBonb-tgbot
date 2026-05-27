@@ -110,7 +110,6 @@ export async function tryApplyCoreFieldFromText(
   if (location.length < 2) return false;
   await updateProfileField(config, userId, 'location', location);
   logInfo('profile', 'Location saved from text', { userId, location });
-  await ctx.reply(`已記錄現居地：${location}`);
   return true;
 }
 

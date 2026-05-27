@@ -7,6 +7,11 @@ import { resolveUserStage } from '../flow/stages.js';
 import { logInfo } from '../ops/runtime-log.js';
 import { deleteMessageSafe } from './language-flow.js';
 import { WELCOME_AFTER_LANGUAGE } from './commands.js';
+import { buildAcceptanceIntro, type SavedFieldAnswer } from './questionnaire-copy.js';
+import {
+  logQuestionnaireBotPrompt,
+  type QuestionnaireLogContext,
+} from './questionnaire-log.js';
 import {
   clearQuestionPrompt,
   markQuestionPrompted,
@@ -115,7 +120,6 @@ export async function applyAcceptanceChoice(
     await resolveUserStage(config, userId);
     progressByUser.delete(userId);
     logInfo('post', 'Acceptance questionnaire complete', { userId, formatted });
-    await ctx.reply('已記錄接受程度問卷 ✅');
     return 'complete';
   }
 
@@ -130,11 +134,41 @@ export async function applyAcceptanceChoice(
   return 'next';
 }
 
+export async function startAcceptanceQuestionnaire(
+  ctx: Context,
+  config: AppConfig,
+  userId: number,
+  options: {
+    previous?: SavedFieldAnswer;
+    lang: string | null | undefined;
+    log?: QuestionnaireLogContext;
+  },
+): Promise<void> {
+  const postData = await getPostResponseMap(config, userId);
+  if (postData.acceptance_questionnaire?.trim()) return;
+
+  const targetGender = targetGenderLabel(postData.target_gender);
+  if (!targetGender) return;
+
+  const items = acceptanceItemsForTarget(targetGender);
+  progressByUser.set(userId, { items, answers: [], index: 0 });
+
+  const intro = buildAcceptanceIntro(targetGender, options.lang, options.previous);
+  await ctx.reply(intro);
+  if (options.log) await logQuestionnaireBotPrompt(options.log, intro);
+
+  await sendAcceptanceItemPicker(ctx, userId, 0, items[0] ?? '', options.lang);
+}
+
 export async function ensureAcceptanceOrPrompt(
   ctx: Context,
   config: AppConfig,
   userText: string,
-  options?: { forcePrompt?: boolean },
+  options?: {
+    forcePrompt?: boolean;
+    previous?: SavedFieldAnswer;
+    log?: QuestionnaireLogContext;
+  },
 ): Promise<'ready' | 'prompted' | 'just_set'> {
   const from = ctx.from;
   if (!from) return 'prompted';
@@ -171,19 +205,11 @@ export async function ensureAcceptanceOrPrompt(
     return 'ready';
   }
 
-  const items = acceptanceItemsForTarget(targetGender);
-  progressByUser.set(from.id, { items, answers: [], index: 0 });
-
   const profile = await getProfile(config, from.id);
-  const en = profile?.preferred_language === 'en';
-  const formal = profile?.preferred_language === 'zh-written';
-  await ctx.reply(
-    en
-      ? `Acceptance questionnaire (target: ${targetGender === '女' ? 'female' : 'male'}):`
-      : formal
-        ? `請逐項選擇接受程度（對象：${targetGender}）：`
-        : `請逐項揀接受程度（對象：${targetGender}）：`,
-  );
-  await sendAcceptanceItemPicker(ctx, from.id, 0, items[0] ?? '', profile?.preferred_language ?? null);
+  await startAcceptanceQuestionnaire(ctx, config, from.id, {
+    previous: options?.previous,
+    lang: profile?.preferred_language ?? null,
+    log: options?.log,
+  });
   return 'prompted';
 }

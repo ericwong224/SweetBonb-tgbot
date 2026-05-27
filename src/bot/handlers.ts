@@ -14,7 +14,10 @@ import {
   ensureQuestionnaireContinuation,
   matchReplyKeyboard,
   sendFollowUpPickers,
+  type QuestionnaireLogContext,
 } from './choice-flow.js';
+import { formatUserAnswerLog } from './questionnaire-copy.js';
+import { logQuestionnaireUserAnswer } from './questionnaire-log.js';
 import {
   applyAcceptanceChoice,
   ensureAcceptanceOrPrompt,
@@ -73,6 +76,15 @@ export interface AppContext {
 
 const BLOCKED_USER_MESSAGE = '不好意思!\n您的活動已被封鎖，請聯絡 @sexycandyhk';
 const WAIT_MESSAGE = '請稍後';
+
+function questionnaireLog(app: AppContext, userId: number): QuestionnaireLogContext {
+  return {
+    config: app.config,
+    botHandle: app.botInfo.bot_username,
+    userId,
+    stageKey: 'profile_complete',
+  };
+}
 
 export function registerHandlers(bot: Bot, app: AppContext) {
   const toolContext = (userId?: number, stage?: Awaited<ReturnType<typeof resolveUserStage>>): ToolContext => ({
@@ -198,9 +210,11 @@ export function registerHandlers(bot: Bot, app: AppContext) {
         const from = ctx.from;
         if (!from) return;
         await syncUser(ctx, app.config);
-        const ok = await applyFieldChoice(ctx, app.config, from.id, fieldKey, index);
-        if (!ok) return;
-        await continueQuestionnaireStep(ctx, app.config, from.id);
+        const log = questionnaireLog(app, from.id);
+        const saved = await applyFieldChoice(ctx, app.config, from.id, fieldKey, index);
+        if (!saved) return;
+        await logQuestionnaireUserAnswer(log, formatUserAnswerLog(saved));
+        await continueQuestionnaireStep(ctx, app.config, from.id, { previous: saved, log });
       });
       return;
     }
@@ -226,7 +240,14 @@ export function registerHandlers(bot: Bot, app: AppContext) {
           levelIndex,
         );
         if (result === 'complete') {
-          await continueQuestionnaireStep(ctx, app.config, from.id);
+          const log = questionnaireLog(app, from.id);
+          const previous = {
+            fieldKey: 'acceptance_questionnaire',
+            label: '可接受性趣問卷',
+            value: '完成',
+          };
+          await logQuestionnaireUserAnswer(log, formatUserAnswerLog(previous));
+          await continueQuestionnaireStep(ctx, app.config, from.id, { previous, log });
         }
       });
       return;
@@ -589,7 +610,15 @@ async function handleChat(
     }
     const coreState = await ensureCoreProfileContinuation(ctx, app.config, userText);
     if (coreState === 'questionnaire_start') {
-      await beginQuestionnaire(ctx, app.config, from.id);
+      const profileAfter = await getProfile(app.config, from.id);
+      const location = profileAfter?.location?.trim();
+      const previous = location
+        ? { fieldKey: 'location', label: '現居地', value: location }
+        : undefined;
+      await beginQuestionnaire(ctx, app.config, from.id, {
+        log: questionnaireLog(app, from.id),
+        previous,
+      });
       return;
     }
     if (coreState === 'prompted' || coreState === 'just_set') return;
@@ -604,7 +633,13 @@ async function handleChat(
   }
 
   if (!options?.skipQuestionnaireCheck) {
-    const qState = await ensureQuestionnaireContinuation(ctx, app.config, from.id, userText);
+    const qState = await ensureQuestionnaireContinuation(
+      ctx,
+      app.config,
+      from.id,
+      userText,
+      { log: questionnaireLog(app, from.id) },
+    );
     if (qState === 'handled' || qState === 'waiting') return;
   }
 

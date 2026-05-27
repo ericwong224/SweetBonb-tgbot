@@ -26,12 +26,31 @@ import {
 import { deleteMessageSafe } from './language-flow.js';
 import { WELCOME_AFTER_LANGUAGE } from './commands.js';
 import {
+  buildQuestionnaireIntro,
+  buildQuestionnairePrompt,
+  formatUserAnswerLog,
+  type SavedFieldAnswer,
+} from './questionnaire-copy.js';
+import {
+  logQuestionnaireBotPrompt,
+  logQuestionnaireUserAnswer,
+  type QuestionnaireLogContext,
+} from './questionnaire-log.js';
+import {
   clearQuestionPrompt,
   markQuestionPrompted,
   wasQuestionPrompted,
 } from './questionnaire-prompt.js';
 
 export { getFieldOptions, fieldHasChoiceOptions } from './field-choices.js';
+export type { SavedFieldAnswer } from './questionnaire-copy.js';
+export type { QuestionnaireLogContext } from './questionnaire-log.js';
+
+export interface QuestionnaireStepOptions {
+  previous?: SavedFieldAnswer;
+  log?: QuestionnaireLogContext;
+  includeIntro?: boolean;
+}
 
 const choiceOptionsByUser = new Map<string, string[]>();
 
@@ -95,22 +114,11 @@ export async function sendFieldChoicePicker(
   field: PostFieldDef,
   options: string[],
   lang: string | null | undefined,
+  messageText?: string,
 ): Promise<void> {
-  const formal = lang === 'zh-written';
-  const en = lang === 'en';
-  const label = field.label_zh || field.field_key;
   const text =
-    field.field_key === 'target_age'
-      ? en
-        ? `Please choose target age — range (e.g. 18-20) or minimum (e.g. 20+):`
-        : formal
-          ? `請選擇期望對象年齡：範圍（如 18-20）或最低年齡（如 20+，即 20 歲或以上）`
-          : `請揀期望對象年齡：範圍（如 18-20）或最低年齡（如 20+，即 20 歲或以上）`
-      : en
-        ? `Please choose: ${label}`
-        : formal
-          ? `請選擇：${label}`
-          : `請揀：${label}`;
+    messageText ??
+    buildQuestionnairePrompt(field, lang, { hasChoiceOptions: true });
   await ctx.reply(text, {
     reply_markup: fieldChoiceKeyboard(userId, field.field_key, options),
   });
@@ -122,16 +130,9 @@ export async function sendTextFieldPrompt(
   userId: number,
   field: PostFieldDef,
   lang: string | null | undefined,
+  messageText?: string,
 ): Promise<void> {
-  const formal = lang === 'zh-written';
-  const en = lang === 'en';
-  const label = field.label_zh || field.field_key;
-  const hint = field.hint?.trim();
-  const text = en
-    ? `Please enter: ${label}${hint ? `\n${hint}` : ''}`
-    : formal
-      ? `請輸入：${label}${hint ? `\n（${hint}）` : ''}`
-      : `請輸入：${label}${hint ? `\n（${hint}）` : ''}`;
+  const text = messageText ?? buildQuestionnairePrompt(field, lang, { hasChoiceOptions: false });
   await ctx.reply(text);
   markQuestionPrompted(userId, field.field_key, 'text');
 }
@@ -140,20 +141,52 @@ async function promptNextQuestionnaireField(
   ctx: Context,
   config: AppConfig,
   userId: number,
+  step?: QuestionnaireStepOptions,
 ): Promise<boolean> {
   const profile = await getProfile(config, userId);
   const lang = profile?.preferred_language ?? null;
   const next = await getNextMissingQuestionnaireField(config, userId);
   if (!next) {
     const { ensureAcceptanceOrPrompt } = await import('./acceptance-flow.js');
-    await ensureAcceptanceOrPrompt(ctx, config, '', { forcePrompt: true });
+    await ensureAcceptanceOrPrompt(ctx, config, '', { forcePrompt: true, previous: step?.previous, log: step?.log });
     return true;
   }
+
+  if (next.field.field_key === 'acceptance_questionnaire') {
+    const { startAcceptanceQuestionnaire } = await import('./acceptance-flow.js');
+    await startAcceptanceQuestionnaire(ctx, config, userId, {
+      previous: step?.previous,
+      lang,
+      log: step?.log,
+    });
+    return true;
+  }
+
   if (wasQuestionPrompted(userId, next.field.field_key)) return false;
+
+  let text = buildQuestionnairePrompt(next.field, lang, {
+    previous: step?.includeIntro ? undefined : step?.previous,
+    hasChoiceOptions: Boolean(next.options?.length),
+  });
+
+  if (step?.includeIntro) {
+    const { needsUsernameReminder } = await import('../db/profile.js');
+    const intro = buildQuestionnaireIntro(lang, needsUsernameReminder(profile));
+    const question = buildQuestionnairePrompt(next.field, lang, {
+      previous: step?.previous,
+      hasChoiceOptions: Boolean(next.options?.length),
+    });
+    text = `${intro}\n\n${question}`;
+  }
+
   if (next.options?.length) {
-    await sendFieldChoicePicker(ctx, userId, next.field, next.options, lang);
+    await sendFieldChoicePicker(ctx, userId, next.field, next.options, lang, text);
   } else {
-    await sendTextFieldPrompt(ctx, userId, next.field, lang);
+    await sendTextFieldPrompt(ctx, userId, next.field, lang, text);
+  }
+
+  if (step?.log) {
+    await logQuestionnaireBotPrompt(step.log, text);
   }
   return true;
 }
@@ -206,12 +239,15 @@ export async function applyFieldChoice(
   userId: number,
   fieldKey: string,
   index: number,
-): Promise<boolean> {
+): Promise<SavedFieldAnswer | null> {
   const value = resolveChoiceIndex(userId, fieldKey, index);
   if (!value) {
     await ctx.answerCallbackQuery({ text: '選項已過期，請重新選擇' });
-    return false;
+    return null;
   }
+
+  const defs = await getPostFieldDefs(config);
+  const field = defs.find((d) => d.field_key === fieldKey);
 
   await savePostResponse(config, userId, fieldKey, value);
   clearQuestionPrompt(userId, fieldKey);
@@ -224,8 +260,11 @@ export async function applyFieldChoice(
   }
 
   await ctx.answerCallbackQuery({ text: `已選擇：${value}` });
-  await ctx.reply(`已記錄：${value}`);
-  return true;
+  return {
+    fieldKey,
+    label: field?.label_zh ?? fieldKey,
+    value,
+  };
 }
 
 export async function ensureGenderOrPrompt(
@@ -264,10 +303,10 @@ export async function tryApplyAnyMissingChoiceFromText(
   config: AppConfig,
   userId: number,
   text: string,
-): Promise<boolean> {
+): Promise<SavedFieldAnswer | null> {
   const skipPrompt =
     text === '你好，我剛開始使用 SweetBonb。' || text === WELCOME_AFTER_LANGUAGE;
-  if (skipPrompt || !text.trim()) return false;
+  if (skipPrompt || !text.trim()) return null;
 
   const defs = await getPostFieldDefs(config);
   const defMap = new Map(defs.map((d) => [d.field_key, d]));
@@ -289,10 +328,9 @@ export async function tryApplyAnyMissingChoiceFromText(
       field: field.field_key,
       value: matched,
     });
-    await ctx.reply(`已記錄：${field.label_zh} → ${matched}`);
-    return true;
+    return { fieldKey: field.field_key, label: field.label_zh, value: matched };
   }
-  return false;
+  return null;
 }
 
 export async function tryApplyTextFieldFromText(
@@ -300,17 +338,17 @@ export async function tryApplyTextFieldFromText(
   config: AppConfig,
   userId: number,
   text: string,
-): Promise<boolean> {
+): Promise<SavedFieldAnswer | null> {
   const skipPrompt =
     text === '你好，我剛開始使用 SweetBonb。' || text === WELCOME_AFTER_LANGUAGE;
-  if (skipPrompt || !text.trim()) return false;
+  if (skipPrompt || !text.trim()) return null;
 
   const next = await getNextMissingQuestionnaireField(config, userId);
-  if (!next || next.options?.length) return false;
-  if (next.field.field_key === 'acceptance_questionnaire') return false;
+  if (!next || next.options?.length) return null;
+  if (next.field.field_key === 'acceptance_questionnaire') return null;
 
   const value = text.trim();
-  if (!value) return false;
+  if (!value) return null;
 
   await savePostResponse(config, userId, next.field.field_key, value);
   clearQuestionPrompt(userId, next.field.field_key);
@@ -320,8 +358,7 @@ export async function tryApplyTextFieldFromText(
     field: next.field.field_key,
     value: value.slice(0, 80),
   });
-  await ctx.reply(`已記錄：${next.field.label_zh} → ${value}`);
-  return true;
+  return { fieldKey: next.field.field_key, label: next.field.label_zh, value };
 }
 
 export async function ensurePostChoiceOrPrompt(
@@ -339,8 +376,9 @@ export async function sendFollowUpPickers(
   ctx: Context,
   config: AppConfig,
   userId: number,
+  step?: QuestionnaireStepOptions,
 ): Promise<void> {
-  await promptNextQuestionnaireField(ctx, config, userId);
+  await promptNextQuestionnaireField(ctx, config, userId, step);
 }
 
 /** Advance to the next questionnaire step after an answer is saved. */
@@ -348,8 +386,9 @@ export async function continueQuestionnaireStep(
   ctx: Context,
   config: AppConfig,
   userId: number,
+  step?: QuestionnaireStepOptions,
 ): Promise<void> {
-  await promptNextQuestionnaireField(ctx, config, userId);
+  await promptNextQuestionnaireField(ctx, config, userId, step);
 }
 
 function isSyntheticUserText(text: string): boolean {
@@ -362,6 +401,7 @@ export async function ensureQuestionnaireContinuation(
   config: AppConfig,
   userId: number,
   userText: string,
+  step?: Pick<QuestionnaireStepOptions, 'log'>,
 ): Promise<'ready' | 'handled' | 'waiting'> {
   const { hasAcceptanceInProgress } = await import('./acceptance-flow.js');
   if (hasAcceptanceInProgress(userId)) return 'ready';
@@ -373,12 +413,20 @@ export async function ensureQuestionnaireContinuation(
   if (complete) return 'ready';
 
   if (!isSyntheticUserText(userText) && userText.trim()) {
-    if (await tryApplyAnyMissingChoiceFromText(ctx, config, userId, userText)) {
-      await continueQuestionnaireStep(ctx, config, userId);
+    const savedChoice = await tryApplyAnyMissingChoiceFromText(ctx, config, userId, userText);
+    if (savedChoice) {
+      if (step?.log) {
+        await logQuestionnaireUserAnswer(step.log, formatUserAnswerLog(savedChoice));
+      }
+      await continueQuestionnaireStep(ctx, config, userId, { previous: savedChoice, log: step?.log });
       return 'handled';
     }
-    if (await tryApplyTextFieldFromText(ctx, config, userId, userText)) {
-      await continueQuestionnaireStep(ctx, config, userId);
+    const savedText = await tryApplyTextFieldFromText(ctx, config, userId, userText);
+    if (savedText) {
+      if (step?.log) {
+        await logQuestionnaireUserAnswer(step.log, formatUserAnswerLog(savedText));
+      }
+      await continueQuestionnaireStep(ctx, config, userId, { previous: savedText, log: step?.log });
       return 'handled';
     }
   }
@@ -390,20 +438,20 @@ export async function ensureQuestionnaireContinuation(
     if (!isSyntheticUserText(userText) && userText.trim()) {
       const profile = await getProfile(config, userId);
       const en = profile?.preferred_language === 'en';
-      await ctx.reply(
-        next.options?.length
-          ? en
-            ? 'Please use the buttons below.'
-            : '請用下面嘅按鈕選擇～'
-          : en
-            ? `Please enter: ${next.field.label_zh}`
-            : `請輸入：${next.field.label_zh}`,
-      );
+      const hint = next.options?.length
+        ? en
+          ? 'Please use the buttons above to choose.'
+          : '請用上面嘅按鈕選擇～'
+        : en
+          ? `Please reply with: ${next.field.label_zh}`
+          : `直接回覆「${next.field.label_zh}」就可以～`;
+      await ctx.reply(hint);
+      if (step?.log) await logQuestionnaireBotPrompt(step.log, hint);
     }
     return 'waiting';
   }
 
-  await promptNextQuestionnaireField(ctx, config, userId);
+  await promptNextQuestionnaireField(ctx, config, userId, step);
   return 'waiting';
 }
 
@@ -411,15 +459,12 @@ export async function beginQuestionnaire(
   ctx: Context,
   config: AppConfig,
   userId: number,
+  step?: Pick<QuestionnaireStepOptions, 'log' | 'previous'>,
 ): Promise<void> {
   clearQuestionPrompt(userId);
-  const profile = await getProfile(config, userId);
-  const lang = profile?.preferred_language ?? null;
-  const en = lang === 'en';
-  await ctx.reply(
-    en ? 'Basic profile done! One question at a time～' : '基本資料搞掂！我會逐題問你～',
-  );
-  const { sendUsernameReminderIfNeeded } = await import('./profile-flow.js');
-  await sendUsernameReminderIfNeeded(ctx, config, userId, { force: true });
-  await promptNextQuestionnaireField(ctx, config, userId);
+  await promptNextQuestionnaireField(ctx, config, userId, {
+    includeIntro: true,
+    log: step?.log,
+    previous: step?.previous,
+  });
 }

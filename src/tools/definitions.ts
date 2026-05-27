@@ -122,7 +122,7 @@ export const TOOL_DEFINITIONS: OpenAI.Chat.Completions.ChatCompletionTool[] = [
     function: {
       name: 'check_member',
       description:
-        'Check if a user has joined a Telegram channel. joined=true for creator/administrator/member, or restricted/banned with is_member=true.',
+        'Check if a user has joined a Telegram channel. joined=true only for creator, administrator, or member status.',
       parameters: {
         type: 'object',
         properties: {

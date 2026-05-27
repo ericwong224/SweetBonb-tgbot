@@ -17,23 +17,14 @@ type ChatMemberLike = {
   is_member?: boolean;
 };
 
-/** Telegram ChatMember: several statuses still mean the user is in the chat. */
+/** Only creator / administrator / member count as channel members. */
 export function isTelegramChatMember(member: ChatMemberLike): boolean {
   switch (member.status) {
     case 'creator':
     case 'administrator':
     case 'member':
       return true;
-    case 'restricted':
-    case 'banned':
-      return member.is_member === true;
-    case 'left':
-    case 'kicked':
-      return false;
     default:
-      if ('is_member' in member && typeof member.is_member === 'boolean') {
-        return member.is_member;
-      }
       return false;
   }
 }

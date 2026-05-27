@@ -1,4 +1,5 @@
 import type { Api } from 'grammy';
+import { InlineKeyboard } from 'grammy';
 import type { AppConfig } from '../config.js';
 import {
   checkPostResponsesComplete,
@@ -21,9 +22,11 @@ import {
   updateProfileField,
 } from '../db/profile.js';
 import {
-  buildPostFormat2,
-  calcAge,
-  getChannelByArea,
+  buildChannelMessageLink,
+  checkPublishChannelMembership,
+} from '../db/channels.js';
+import {
+  buildPostFormatsFromProfile,
   getChannelInfo,
 } from '../db/posts.js';
 import {
@@ -236,18 +239,13 @@ async function savePostData(ctx: ToolContext, args: Record<string, unknown>) {
   const postDataAfter = await getPostResponseMap(ctx.config, userId);
 
   if (isCoreProfileComplete(profile) && profile?.dob && profile.gender && profile.location) {
-    const age = calcAge(new Date(profile.dob));
-    const format = buildPostFormat2(
+    const formats = buildPostFormatsFromProfile(
       profile.location,
       profile.gender,
-      age,
-      postDataAfter.member_relationship_status ?? '單身',
-      postDataAfter.member_height ?? '',
-      postDataAfter.member_weight ?? '',
+      new Date(profile.dob),
       postDataAfter,
-      postDataAfter.secure_pairing_options ?? '',
     );
-    await updateUserPostBody(ctx.config, userId, format);
+    await updateUserPostBody(ctx.config, userId, formats.detailed, formats.short);
   }
 
   await resolveUserStage(ctx.config, userId);
@@ -283,30 +281,72 @@ async function post2publish(ctx: ToolContext, args: Record<string, unknown>) {
   const profile = await getProfile(ctx.config, userId);
   if (!profile?.location) return gateError('缺少現居地，無法選擇頻道');
 
-  const channel = await getChannelByArea(ctx.config, profile.location);
-  if (!channel) return gateError(`找不到 ${profile.location} 對應的發佈頻道`);
+  const channelCheck = await checkPublishChannelMembership(
+    ctx.api,
+    ctx.config,
+    userId,
+    profile.location,
+  );
 
-  const channelId = Number(channel.channel_id);
-  const userPost = await getUserPost(ctx.config, userId);
-  let body = userPost?.body_format;
-  if (!body) {
-    await refreshPostFormat(ctx, userId);
-    body = (await getUserPost(ctx.config, userId))?.body_format;
+  if (!channelCheck.mainChannel) {
+    return gateError('找不到總頻設定，請聯絡管理員');
   }
-  if (!body) return gateError('無法生成啟示內容');
+  if (!channelCheck.regionalChannel) {
+    return gateError(`找不到 ${profile.location} 對應的地區發佈頻道`);
+  }
+
+  if (!channelCheck.ok) {
+    const names = channelCheck.missing.map((m) => `${m.label}（${m.display}）`).join('、');
+    return gateError(`發佈前請先加入以下頻道：${names}`);
+  }
+
+  const regionalChannelId = Number(channelCheck.regionalChannel.channel_id);
+  const mainChannelId = Number(channelCheck.mainChannel.channel_id);
+
+  const userPost = await getUserPost(ctx.config, userId);
+  let detailedBody = userPost?.body_format;
+  let shortBody = userPost?.body_short;
+  if (!detailedBody || !shortBody) {
+    await refreshPostFormat(ctx, userId);
+    const refreshed = await getUserPost(ctx.config, userId);
+    detailedBody = refreshed?.body_format ?? undefined;
+    shortBody = refreshed?.body_short ?? undefined;
+  }
+  if (!detailedBody || !shortBody) return gateError('無法生成啟示內容');
 
   const botUser = ctx.botUsername ?? 'sweetbonb_bot';
   const footer = `\n\n👉 配對請按：https://t.me/${botUser}?start=match-target-${userId}`;
-  const fullText = body + footer;
+  const detailedText = detailedBody + footer;
 
-  const sent = await ctx.api.sendMessage(channelId, fullText);
-  await markUserPostPublished(ctx.config, userId, channelId, sent.message_id);
+  const regionalSent = await ctx.api.sendMessage(regionalChannelId, detailedText);
+  const detailLink = buildChannelMessageLink(
+    regionalChannelId,
+    regionalSent.message_id,
+    channelCheck.regionalChannel.channel_username,
+  );
+
+  const mainKeyboard = new InlineKeyboard().url('查看詳細啟示', detailLink);
+  const mainSent = await ctx.api.sendMessage(mainChannelId, shortBody, {
+    reply_markup: mainKeyboard,
+  });
+
+  await markUserPostPublished(
+    ctx.config,
+    userId,
+    regionalChannelId,
+    regionalSent.message_id,
+    mainChannelId,
+    mainSent.message_id,
+  );
   await resolveUserStage(ctx.config, userId);
 
   return {
     success: true,
-    channel_id: channelId,
-    message_id: sent.message_id,
+    regional_channel_id: regionalChannelId,
+    regional_message_id: regionalSent.message_id,
+    main_channel_id: mainChannelId,
+    main_message_id: mainSent.message_id,
+    detail_link: detailLink,
     status: 'publish',
   };
 }
@@ -361,17 +401,13 @@ export async function refreshPostFormat(ctx: ToolContext, userId: number) {
   if (!isCoreProfileComplete(profile) || !profile?.dob || !profile.gender || !profile.location) return;
 
   const postData = await getPostResponseMap(ctx.config, userId);
-  const format = buildPostFormat2(
+  const formats = buildPostFormatsFromProfile(
     profile.location,
     profile.gender,
-    calcAge(new Date(profile.dob)),
-    postData.member_relationship_status ?? '單身',
-    postData.member_height ?? '',
-    postData.member_weight ?? '',
+    new Date(profile.dob),
     postData,
-    postData.secure_pairing_options ?? '',
   );
-  await updateUserPostBody(ctx.config, userId, format);
+  await updateUserPostBody(ctx.config, userId, formats.detailed, formats.short);
 }
 
 export { setUserPostStatus };

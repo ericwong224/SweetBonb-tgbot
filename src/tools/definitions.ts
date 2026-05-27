@@ -93,7 +93,8 @@ export const TOOL_DEFINITIONS: OpenAI.Chat.Completions.ChatCompletionTool[] = [
     type: 'function',
     function: {
       name: 'post2publish',
-      description: 'Publish user revelation post to the appropriate Telegram channel after profile and questionnaire are complete',
+      description:
+        'Publish user revelation: detailed post to regional channel, short post to main channel. Requires membership in both channels.',
       parameters: {
         type: 'object',
         properties: {

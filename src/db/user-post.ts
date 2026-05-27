@@ -8,8 +8,11 @@ export interface UserPostRow extends RowDataPacket {
   user_id: number;
   status: PostStatus;
   body_format: string | null;
+  body_short: string | null;
   channel_id: number | null;
   channel_message_id: number | null;
+  main_channel_id: number | null;
+  main_channel_message_id: number | null;
   published_at: Date | null;
 }
 
@@ -47,8 +50,23 @@ export async function updateUserPostBody(
   config: AppConfig,
   userId: number,
   bodyFormat: string,
+  bodyShort?: string,
 ): Promise<void> {
   await ensureUserPost(config, userId);
+  if (bodyShort != null) {
+    await execute(
+      config,
+      'UPDATE tg_user_post SET body_format = ?, body_short = ? WHERE user_id = ?',
+      [bodyFormat, bodyShort, userId],
+    );
+    await execute(config, 'UPDATE users SET post_format_2 = ?, post_format_1 = ? WHERE user_id = ?', [
+      bodyFormat,
+      bodyShort,
+      userId,
+    ]);
+    return;
+  }
+
   await execute(config, 'UPDATE tg_user_post SET body_format = ? WHERE user_id = ?', [
     bodyFormat,
     userId,
@@ -62,20 +80,22 @@ export async function updateUserPostBody(
 export async function markUserPostPublished(
   config: AppConfig,
   userId: number,
-  channelId: number,
-  channelMessageId: number,
+  regionalChannelId: number,
+  regionalMessageId: number,
+  mainChannelId: number,
+  mainMessageId: number,
 ): Promise<void> {
   await ensureUserPost(config, userId);
   await execute(
     config,
     `UPDATE tg_user_post SET status = 'publish', channel_id = ?, channel_message_id = ?,
-     published_at = NOW() WHERE user_id = ?`,
-    [channelId, channelMessageId, userId],
+     main_channel_id = ?, main_channel_message_id = ?, published_at = NOW() WHERE user_id = ?`,
+    [regionalChannelId, regionalMessageId, mainChannelId, mainMessageId, userId],
   );
   await execute(
     config,
     `UPDATE users SET post_on = 'publish', post_channel_id = ? WHERE user_id = ?`,
-    [channelId, userId],
+    [regionalChannelId, userId],
   );
 }
 
@@ -83,8 +103,9 @@ export async function resetUserPostDraft(config: AppConfig, userId: number): Pro
   await ensureUserPost(config, userId);
   await execute(
     config,
-    `UPDATE tg_user_post SET status = 'draft', body_format = NULL, channel_id = NULL,
-     channel_message_id = NULL, published_at = NULL WHERE user_id = ?`,
+    `UPDATE tg_user_post SET status = 'draft', body_format = NULL, body_short = NULL,
+     channel_id = NULL, channel_message_id = NULL, main_channel_id = NULL,
+     main_channel_message_id = NULL, published_at = NULL WHERE user_id = ?`,
     [userId],
   );
   await execute(

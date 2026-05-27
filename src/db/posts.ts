@@ -83,6 +83,54 @@ export async function getChannelByArea(config: AppConfig, area: string) {
   return rows[0] ?? null;
 }
 
+export function buildPostFormat1(
+  location: string,
+  gender: string,
+  age: number,
+  relationshipStatus: string,
+  postData: Record<string, string>,
+): string {
+  const genderLabel = gender === 'M' ? '男' : '女';
+  const targetGender = postData.target_gender ?? '';
+  const targetRel = postData.target_relationship ?? '';
+  const targetAge = postData.target_age ?? '';
+
+  return [
+    `【${location}】🌟 ${genderLabel} ${age}歲 ${relationshipStatus}`,
+    `💕 尋找 ${targetGender}${targetRel ? ` · ${targetRel}` : ''}`,
+    targetAge ? `年齡 ${targetAge}` : '',
+  ]
+    .filter(Boolean)
+    .join('\n');
+}
+
+export function buildPostFormatsFromProfile(
+  location: string,
+  gender: string,
+  dob: Date,
+  postData: Record<string, string>,
+): { short: string; detailed: string } {
+  const age = calcAge(dob);
+  const relationshipStatus = postData.member_relationship_status ?? '單身';
+  const height = postData.member_height ?? '';
+  const weight = postData.member_weight ?? '';
+  const securePairing = postData.secure_pairing_options ?? '';
+
+  return {
+    short: buildPostFormat1(location, gender, age, relationshipStatus, postData),
+    detailed: buildPostFormat2(
+      location,
+      gender,
+      age,
+      relationshipStatus,
+      height,
+      weight,
+      postData,
+      securePairing,
+    ),
+  };
+}
+
 export function buildPostFormat2(
   location: string,
   gender: string,
